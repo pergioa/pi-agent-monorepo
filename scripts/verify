@@ -121,9 +121,10 @@ if grep -Eqi 'duplicate|already registered|extension.*error|failed to load' "$pi
 pass "Learn Pi startup without duplicate registration"
 
 pi_agents_output="$mermaid_tmp/pi-agents.out"
-(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --approve --no-session --tools subagents_list -p 'Call subagents_list exactly once. Return only its output, with no commentary.' >"$pi_agents_output" 2>&1) || { tail -n 40 "$pi_agents_output" >&2; fail "Learn subagent discovery smoke test"; }
-grep -Eq '^.? researcher \(project\) \[ollama/qwen3\.6:35b-a3b-coding\]' "$pi_agents_output" || { cat "$pi_agents_output" >&2; fail "local researcher was not discovered"; }
-grep -Eq '^.? deep-researcher \(project\) \[openrouter/z-ai/glm-5\.3\]' "$pi_agents_output" || { cat "$pi_agents_output" >&2; fail "deep researcher was not discovered"; }
+(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --approve --no-session --mode json --thinking off --tools subagents_list -p 'Call subagents_list exactly once.' >"$pi_agents_output" 2>&1) || { tail -n 40 "$pi_agents_output" >&2; fail "Learn subagent discovery smoke test"; }
+grep -Fq '"toolName":"subagents_list"' "$pi_agents_output" || { tail -n 40 "$pi_agents_output" >&2; fail "subagents_list tool was not called"; }
+grep -Fq 'researcher (project) [ollama/qwen3.6:35b-a3b-coding]' "$pi_agents_output" || { tail -n 40 "$pi_agents_output" >&2; fail "local researcher was not discovered"; }
+grep -Fq 'deep-researcher (project) [openrouter/z-ai/glm-5.3]' "$pi_agents_output" || { tail -n 40 "$pi_agents_output" >&2; fail "deep researcher was not discovered"; }
 pass "hybrid researcher agents discovered without a hosted-model call"
 
 tmux_session="pi-monorepo-verify-$$"
