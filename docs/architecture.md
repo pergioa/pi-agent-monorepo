@@ -41,3 +41,8 @@ Monorepo remotes:
 Global package entries point at `./packages/...` beneath the Pi agent directory. Deployment links those two names to the monorepo vendor trees, making this checkout—not Pi's package cache—the runtime source.
 
 Learn inherits the global ask-user-question extension. Its project tree intentionally omits the identical duplicate, preventing a second tool registration.
+
+The active Learn deployment defaults to the `Uni-notes` Obsidian vault beneath
+the current user's iCloud documents directory. `PI_LEARN_DIR` overrides that
+destination without changing canonical content, and all path handling remains
+quoted so spaces are safe.

@@ -14,7 +14,7 @@ This is a personal system I built for myself, shared as-is. Built as a pi config
 - `extensions/quiz/` — graded questions with instant feedback (✓/✗, correct answer, explanation)
 - `extensions/md-log/` — link a markdown file to the session
 - `extensions/visual-tools/` — tools for visualization subagents
-- `agents/` — `researcher`, `svg-maker`, `mermaid-maker`: the subagents the system delegates to
+- `agents/` — local-first `researcher`, hosted `deep-researcher`, `svg-maker`, and `mermaid-maker`: the subagents the system delegates to
 
 ## Install
 
@@ -35,5 +35,19 @@ Then open pi in that directory. (Or copy the pieces you want into your existing 
 ## Notes
 
 You can run the system without subagents. The main session does the teaching. You just lose the researcher (truth verification) and the generated visuals.
+
+The teaching workflow uses the local Ollama `researcher` for routine work. It
+selectively escalates unresolved, conflicting, high-stakes, or unusually broad
+questions to the OpenRouter-backed `deep-researcher`; routine research does not
+call both. You can invoke either explicitly from Pi inside tmux:
+
+```text
+/subagent researcher <question>
+/subagent deep-researcher <question and any unresolved local findings>
+```
+
+The hosted fallback requires locally configured OpenRouter authentication. Both
+researchers also require a functioning `web_search` provider; `web_fetch` does
+not replace search discovery.
 
 The teaching skill is written for one learner (me). Edit the skill to fit how you learn best.

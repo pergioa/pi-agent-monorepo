@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes}"
 BACKUP_ROOT="${PI_MIGRATION_BACKUP_ROOT:-$REPO_ROOT/.deploy-state/backups}"
 
 if [[ "${1:-}" == "--backup-root" ]]; then
@@ -86,4 +86,3 @@ if [[ $BACKED_UP -eq 1 ]]; then
 else
   echo "Deployment already current; no paths replaced."
 fi
-

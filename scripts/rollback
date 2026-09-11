@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $# -eq 1 ]] || { echo "Usage: $0 /absolute/path/to/pi-agent-migration-backup-TIMESTAMP" >&2; exit 2; }
 BACKUP_ROOT="$1"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes}"
 [[ -d "$BACKUP_ROOT/global-agent" && -d "$BACKUP_ROOT/learn-dot-pi" ]] || { echo "Invalid migration backup: $BACKUP_ROOT" >&2; exit 1; }
 
 STAMP="$(date +%Y%m%d-%H%M%S)-$$"
@@ -37,4 +37,3 @@ ditto "$BACKUP_ROOT/pi-config-clone" "$PI_CONFIG_TARGET"
 
 chmod -R go-rwx "$STASH"
 echo "Rollback complete. The pre-rollback managed state is preserved at: $STASH"
-

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes}"
 LOCAL_ONLY=0
 [[ "${1:-}" == "--local" ]] && LOCAL_ONLY=1
 [[ $# -le 1 ]] || { echo "Usage: $0 [--local]" >&2; exit 2; }
@@ -40,8 +40,11 @@ done
 for role in scout researcher worker; do
   grep -q '^model: ollama/qwen3.6:35b-a3b-coding$' "config/global/agents/$role.md" || fail "$role override mismatch"
 done
-grep -q '^model: openrouter/z-ai/glm-5.3$' config/projects/learn/agents/researcher.md || fail "Learn researcher model mismatch"
-pass "model and memory configuration"
+grep -q '^model: ollama/qwen3.6:35b-a3b-coding$' config/projects/learn/agents/researcher.md || fail "Learn local researcher model mismatch"
+grep -q '^name: deep-researcher$' config/projects/learn/agents/deep-researcher.md || fail "Learn deep researcher name mismatch"
+grep -q '^model: openrouter/z-ai/glm-5.3$' config/projects/learn/agents/deep-researcher.md || fail "Learn deep researcher model mismatch"
+grep -q 'Do not call both agents routinely' config/projects/learn/skills/teach/SKILL.md || fail "Learn hybrid researcher routing policy missing"
+pass "model, memory, and hybrid researcher configuration"
 
 check_link() {
   local source="$1" target="$2"
@@ -116,6 +119,12 @@ pi_learn_output="$mermaid_tmp/pi-learn.out"
 grep -q 'LEARN_SMOKE_OK' "$pi_learn_output" || fail "Learn Pi smoke response missing"
 if grep -Eqi 'duplicate|already registered|extension.*error|failed to load' "$pi_learn_output"; then tail -n 40 "$pi_learn_output" >&2; fail "Learn extension diagnostics"; fi
 pass "Learn Pi startup without duplicate registration"
+
+pi_agents_output="$mermaid_tmp/pi-agents.out"
+(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --approve --no-session --tools subagents_list -p 'Call subagents_list exactly once. Return only its output, with no commentary.' >"$pi_agents_output" 2>&1) || { tail -n 40 "$pi_agents_output" >&2; fail "Learn subagent discovery smoke test"; }
+grep -Eq '^.? researcher \(project\) \[ollama/qwen3\.6:35b-a3b-coding\]' "$pi_agents_output" || { cat "$pi_agents_output" >&2; fail "local researcher was not discovered"; }
+grep -Eq '^.? deep-researcher \(project\) \[openrouter/z-ai/glm-5\.3\]' "$pi_agents_output" || { cat "$pi_agents_output" >&2; fail "deep researcher was not discovered"; }
+pass "hybrid researcher agents discovered without a hosted-model call"
 
 tmux_session="pi-monorepo-verify-$$"
 tmux_output="$mermaid_tmp/pi-tmux.out"

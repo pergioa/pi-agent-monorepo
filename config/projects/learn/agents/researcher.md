@@ -1,8 +1,8 @@
 ---
 name: researcher
-description: Web researcher — searches the web and synthesizes findings
+description: Local-first web researcher for routine scoping, verification, and sourced briefs
 tools: web_search, web_fetch, safe_bash
-model: openrouter/z-ai/glm-5.3
+model: ollama/qwen3.6:35b-a3b-coding
 thinking: medium
 system-prompt: append
 auto-exit: true
@@ -48,4 +48,6 @@ Numbered findings with inline source citations:
 - Dropped: Source Title — why excluded
 
 ## Gaps
-What couldn't be answered. Suggested next steps.
+What couldn't be answered. Suggested next steps. Explicitly recommend a
+`deep-researcher` follow-up when sources conflict, important claims remain
+unverified, or the question requires unusually broad or multi-hop synthesis.

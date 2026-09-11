@@ -27,7 +27,7 @@ pi
 Learn (approve the project resources on the first launch):
 
 ```bash
-cd "$HOME/studio code/learn"
+cd "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes"
 pi --approve
 ```
 
@@ -36,6 +36,17 @@ Interactive subagents require Pi to run inside tmux:
 ```bash
 tmux new-session -A -s pi-agent
 pi
+```
+
+Learn research is hybrid and local-first. Routine teaching automatically uses
+the Ollama-backed `researcher`. Difficult, high-stakes, conflicting, or
+unresolved questions may escalate to the separately named OpenRouter-backed
+`deep-researcher`; routine work does not call both. They can also be selected
+manually inside Pi:
+
+```text
+/subagent researcher <question>
+/subagent deep-researcher <question and unresolved local findings>
 ```
 
 Inside Pi, browser automation and observational memory are both opt-in:
@@ -74,4 +85,8 @@ cd "$HOME/studio code/pi-agent-monorepo"
 
 ## Credentials
 
-The main Ollama workflow needs no new hosted-provider secret. Learn's project researcher still names its upstream OpenRouter model, and web search still expects local Google Custom Search credentials. Neither credential is invented or committed by this repository.
+The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` retains `openrouter/z-ai/glm-5.3` and requires OpenRouter authentication when used. Web search separately requires a configured search provider. No credential is invented or committed by this repository.
+
+The deployment, verification, and rollback scripts default to this Obsidian
+vault as the active Learn project. To target a different Learn project for one
+run, set `PI_LEARN_DIR` to its absolute path.
