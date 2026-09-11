@@ -41,10 +41,3 @@
 *.local.json
 backups/
 pi-agent-migration-backup-*/
-
-# Explicitly excluded dictation/voice artifacts
-**/pi-dictate/
-**/*dictat*/
-**/*whisper*/
-**/*microphone*/
-**/*audio-record*/

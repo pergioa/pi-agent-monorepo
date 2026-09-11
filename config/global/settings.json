@@ -1,0 +1,23 @@
+{
+  "defaultProvider": "ollama",
+  "defaultModel": "qwen3.6:35b-a3b-coding",
+  "lastChangelogVersion": "0.85.1",
+  "theme": "dark",
+  "packages": [
+    "./packages/pi-interactive-subagents",
+    "./packages/pi-observational-memory"
+  ],
+  "observational-memory": {
+    "compactAtContextTokens": 100000,
+    "models": {
+      "observer": {
+        "provider": "ollama",
+        "id": "qwen3.6:35b-a3b-coding"
+      },
+      "consolidator": {
+        "provider": "ollama",
+        "id": "qwen3.6:35b-a3b-coding"
+      }
+    }
+  }
+}
