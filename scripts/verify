@@ -106,16 +106,31 @@ for command in yt-dlp ffmpeg tmux; do command -v "$command" >/dev/null || fail "
 pass "yt-dlp, ffmpeg, and tmux installed"
 
 pi_global_output="$mermaid_tmp/pi-global.out"
-(cd "$HOME" && PI_OFFLINE=1 pi --no-session -p 'Reply exactly PI_SMOKE_OK.' >"$pi_global_output" 2>&1) || { tail -n 40 "$pi_global_output" >&2; fail "global Pi startup/model smoke test"; }
+(cd "$HOME" && PI_OFFLINE=1 pi --verbose --no-session -p 'Reply exactly PI_SMOKE_OK.' >"$pi_global_output" 2>&1) || { tail -n 40 "$pi_global_output" >&2; fail "global Pi startup/model smoke test"; }
 grep -q 'PI_SMOKE_OK' "$pi_global_output" || fail "global Pi did not use the configured model successfully"
-if grep -Eqi 'duplicate|already registered|extension.*error' "$pi_global_output"; then tail -n 40 "$pi_global_output" >&2; fail "global Pi startup diagnostics"; fi
+if grep -Eqi 'duplicate|already registered|extension.*error|failed to load' "$pi_global_output"; then tail -n 40 "$pi_global_output" >&2; fail "global Pi startup diagnostics"; fi
 pass "global Pi startup with configured Ollama model"
 
 pi_learn_output="$mermaid_tmp/pi-learn.out"
-(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --approve --no-session -p 'Reply exactly LEARN_SMOKE_OK.' >"$pi_learn_output" 2>&1) || { tail -n 40 "$pi_learn_output" >&2; fail "Learn Pi startup/model smoke test"; }
+(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --verbose --approve --no-session -p 'Reply exactly LEARN_SMOKE_OK.' >"$pi_learn_output" 2>&1) || { tail -n 40 "$pi_learn_output" >&2; fail "Learn Pi startup/model smoke test"; }
 grep -q 'LEARN_SMOKE_OK' "$pi_learn_output" || fail "Learn Pi smoke response missing"
-if grep -Eqi 'duplicate|already registered|extension.*error' "$pi_learn_output"; then tail -n 40 "$pi_learn_output" >&2; fail "Learn extension diagnostics"; fi
+if grep -Eqi 'duplicate|already registered|extension.*error|failed to load' "$pi_learn_output"; then tail -n 40 "$pi_learn_output" >&2; fail "Learn extension diagnostics"; fi
 pass "Learn Pi startup without duplicate registration"
+
+tmux_session="pi-monorepo-verify-$$"
+tmux_output="$mermaid_tmp/pi-tmux.out"
+tmux new-session -d -s "$tmux_session" -c "$HOME" "PI_OFFLINE=1 pi --verbose --no-session -p 'Reply exactly TMUX_SMOKE_OK.' > '$tmux_output' 2>&1"
+for _ in {1..120}; do
+  tmux has-session -t "$tmux_session" 2>/dev/null || break
+  sleep 1
+done
+if tmux has-session -t "$tmux_session" 2>/dev/null; then
+  tmux kill-session -t "$tmux_session"
+  fail "tmux Pi smoke test timed out"
+fi
+grep -q 'TMUX_SMOKE_OK' "$tmux_output" || { tail -n 40 "$tmux_output" >&2; fail "Pi startup inside tmux"; }
+if grep -Eqi 'duplicate|already registered|extension.*error|failed to load' "$tmux_output"; then tail -n 40 "$tmux_output" >&2; fail "tmux extension diagnostics"; fi
+pass "Pi startup inside tmux with package extensions"
 
 if [[ $LOCAL_ONLY -eq 0 ]]; then
   gh auth status >/dev/null 2>&1 || fail "GitHub CLI is not authenticated"
