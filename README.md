@@ -85,7 +85,20 @@ cd "$HOME/studio code/pi-agent-monorepo"
 
 ## Credentials
 
-The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` retains `openrouter/z-ai/glm-5.3` and requires OpenRouter authentication when used. Web search separately requires a configured search provider. No credential is invented or committed by this repository.
+The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` retains `openrouter/z-ai/glm-5.3` and requires OpenRouter authentication when used.
+
+`web_search` uses Brave Search. Put the Brave key in the empty
+`brave_search_api_key` field in
+`config/global/extensions/web-search/auth.json`. This local file is ignored by
+Git and must remain mode `0600`. Alternatively, provide
+`BRAVE_SEARCH_API_KEY` in Pi's environment. Verify the configured key with:
+
+```bash
+cd "$HOME/studio code/pi-agent-monorepo"
+./scripts/verify-web-search
+```
+
+No credential is invented or committed by this repository.
 
 The deployment, verification, and rollback scripts default to this Obsidian
 vault as the active Learn project. To target a different Learn project for one

@@ -46,6 +46,19 @@ grep -q '^model: openrouter/z-ai/glm-5.3$' config/projects/learn/agents/deep-res
 grep -q 'Do not call both agents routinely' config/projects/learn/skills/teach/SKILL.md || fail "Learn hybrid researcher routing policy missing"
 pass "model, memory, and hybrid researcher configuration"
 
+web_search_dir="$REPO_ROOT/config/global/extensions/web-search"
+grep -Fq 'https://api.search.brave.com/res/v1/web/search' "$web_search_dir/index.ts" || fail "Brave Search endpoint missing"
+grep -Fq '"X-Subscription-Token": apiKey' "$web_search_dir/index.ts" || fail "Brave Search authentication header missing"
+if grep -Eqi 'google custom search|GOOGLE_SEARCH_API_KEY|GOOGLE_CSE_ID|google_search_api_key|google_cse_id' "$web_search_dir/index.ts" "$web_search_dir/auth.example.json"; then
+  fail "effective web_search still references Google Custom Search"
+fi
+if [[ -f "$web_search_dir/auth.json" ]]; then
+  jq -e '.brave_search_api_key | type == "string"' "$web_search_dir/auth.json" >/dev/null || fail "Brave auth.json has the wrong shape"
+  auth_mode="$(stat -f '%Lp' "$web_search_dir/auth.json" 2>/dev/null || stat -c '%a' "$web_search_dir/auth.json")"
+  [[ "$auth_mode" == "600" ]] || fail "Brave auth.json permissions are $auth_mode, expected 600"
+fi
+pass "Brave Search endpoint and local credential file"
+
 check_link() {
   local source="$1" target="$2"
   [[ -L "$target" ]] || fail "not a symlink: $target"

@@ -27,7 +27,7 @@ Audited on 2026-09-11 with Pi 0.85.1, Node 24.18.0, npm 11.16.0, and Python 3.14
 
 The following stay in their original runtime locations and are ignored everywhere in this repository: `auth.json`, `sessions/`, model catalogs/stores, `.memory/`, browser profiles, caches, logs, dependency directories, virtual environments, and transient render files.
 
-No OpenRouter or web-search-provider credential was created. Configure those only when desired using Pi/provider documentation and local untracked authentication. The local researcher does not require OpenRouter; the hosted fallback does.
+No OpenRouter credential was created. Learn's local researcher does not require OpenRouter; the hosted fallback does. The effective `web_search` extension uses Brave Search and reads its key from an ignored mode-0600 `auth.json` file or `BRAVE_SEARCH_API_KEY`; the repository contains only an empty local field and empty example.
 
 ## Original locations
 

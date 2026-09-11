@@ -47,7 +47,7 @@ call both. You can invoke either explicitly from Pi inside tmux:
 ```
 
 The hosted fallback requires locally configured OpenRouter authentication. Both
-researchers also require a functioning `web_search` provider; `web_fetch` does
-not replace search discovery.
+researchers use the globally managed Brave-backed `web_search` tool; its key is
+stored locally outside Git. `web_fetch` does not replace search discovery.
 
 The teaching skill is written for one learner (me). Edit the skill to fit how you learn best.
