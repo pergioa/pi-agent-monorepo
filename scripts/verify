@@ -82,7 +82,7 @@ npm_projects=(
   config/projects/learn/extensions/visual-tools
 )
 for project in "${npm_projects[@]}"; do
-  (cd "$REPO_ROOT/$project" && npm audit --omit=dev --audit-level=high)
+  (cd "$REPO_ROOT/$project" && npm audit --package-lock-only --omit=dev --audit-level=high)
 done
 pass "npm audits"
 
@@ -92,7 +92,7 @@ pass "Playwright Chromium launch"
 mermaid_dir="$REPO_ROOT/config/projects/learn/extensions/visual-tools"
 mermaid_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pi-mermaid-verify.XXXXXX")"
 printf '%s\n' 'graph TD' '  A[Pi] --> B[Learn]' > "$mermaid_tmp/smoke.mmd"
-chrome_path="$(cd "$mermaid_dir" && node --input-type=module -e 'import puppeteer from "puppeteer"; process.stdout.write(puppeteer.executablePath())')"
+chrome_path="$(cd "$mermaid_dir" && node --input-type=module -e 'import puppeteer from "puppeteer"; process.stdout.write(await puppeteer.executablePath())')"
 node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({executablePath: process.argv[2], args:["--no-sandbox"]}))' "$mermaid_tmp/puppeteer.json" "$chrome_path"
 (cd "$mermaid_dir" && ./node_modules/.bin/mmdc -i "$mermaid_tmp/smoke.mmd" -o "$mermaid_tmp/smoke.png" -p "$mermaid_tmp/puppeteer.json" -b white)
 [[ -s "$mermaid_tmp/smoke.png" ]] || fail "Mermaid output missing"
@@ -134,4 +134,3 @@ if [[ $LOCAL_ONLY -eq 0 ]]; then
 fi
 
 echo "All verification checks passed."
-

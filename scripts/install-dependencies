@@ -26,14 +26,16 @@ npm_projects=(
   "$REPO_ROOT/config/global/extensions/bash-guard"
   "$REPO_ROOT/config/global/extensions/browser"
   "$REPO_ROOT/config/global/extensions/web-fetch"
-  "$REPO_ROOT/upstream/pi-interactive-subagents"
-  "$REPO_ROOT/upstream/pi-observational-memory"
   "$REPO_ROOT/config/projects/learn/extensions/visual-tools"
 )
 
 for project in "${npm_projects[@]}"; do
-  echo "Installing locked dependencies: $project"
-  (cd "$project" && npm ci)
+  if (cd "$project" && npm ls --omit=dev --depth=0 >/dev/null 2>&1); then
+    echo "Reusing matching installed dependencies: $project"
+  else
+    echo "Installing missing locked dependencies: $project"
+    (cd "$project" && npm ci)
+  fi
 done
 
 pi_package="$(npm root -g)/@earendil-works/pi-coding-agent"
@@ -49,11 +51,28 @@ if [[ -e "$visual_link" || -L "$visual_link" ]]; then
 fi
 [[ -L "$visual_link" ]] || ln -s "$pi_package" "$visual_link"
 
-echo "Installing matching Playwright Chromium runtime"
-(cd "$REPO_ROOT/config/global/extensions/browser" && npx playwright-core install chromium)
+browser_dir="$REPO_ROOT/config/global/extensions/browser"
+if (cd "$browser_dir" && node --input-type=module -e 'import { existsSync } from "node:fs"; import { chromium } from "playwright-core"; if (!existsSync(chromium.executablePath())) process.exit(1)') >/dev/null 2>&1; then
+  echo "Reusing matching Playwright Chromium runtime"
+else
+  echo "Installing matching Playwright Chromium runtime"
+  (cd "$browser_dir" && npx playwright-core install chromium)
+fi
+
+visual_dir="$REPO_ROOT/config/projects/learn/extensions/visual-tools"
+if (cd "$visual_dir" && node --input-type=module -e 'import { existsSync } from "node:fs"; import puppeteer from "puppeteer"; const path = await puppeteer.executablePath(); if (!existsSync(path)) process.exit(1)') >/dev/null 2>&1; then
+  echo "Reusing installed Puppeteer Chrome runtime"
+else
+  echo "Installing Puppeteer Chrome runtime"
+  (cd "$visual_dir" && npx puppeteer browsers install chrome)
+fi
 
 pdf_skill="$REPO_ROOT/config/global/skills/pdf-reader"
 [[ -x "$pdf_skill/.venv/bin/python" ]] || python3 -m venv "$pdf_skill/.venv"
-"$pdf_skill/.venv/bin/python" -m pip install --disable-pip-version-check -r "$pdf_skill/requirements.txt"
+if [[ "$("$pdf_skill/.venv/bin/python" -c 'import fitz; print(fitz.__version__)' 2>/dev/null || true)" == "1.27.2.2" ]]; then
+  echo "Reusing PyMuPDF 1.27.2.2 virtual environment"
+else
+  "$pdf_skill/.venv/bin/python" -m pip install --disable-pip-version-check -r "$pdf_skill/requirements.txt"
+fi
 
 echo "Dependency installation complete."
