@@ -12,7 +12,6 @@ Some extensions are big enough to live in their own repositories:
 
 - **[pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents)** — async, interactive subagents in multiplexer panes
 - **[pi-observational-memory](https://github.com/amosblomqvist/pi-observational-memory)** — tiered session memory with deterministic compaction
-- **[pi-dictate](https://github.com/amosblomqvist/pi-dictate)** — real-time voice dictation inside pi
 - **[learn](https://github.com/amosblomqvist/learn)** — my AI learning system, built on top of this config
 
 This repo contains everything else.
