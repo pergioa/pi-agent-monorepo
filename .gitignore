@@ -1,0 +1,50 @@
+# Secrets and Pi runtime state
+**/auth.json
+**/auth.*.json
+!**/auth.example.json
+**/sessions/
+**/.memory/
+**/browser-profile*/
+**/browser_profiles/
+**/profiles/
+**/models.json
+**/models-store.json
+**/*.log
+**/logs/
+**/.cache/
+**/cache/
+
+# Installed dependencies and generated build state
+**/node_modules/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store
+**/coverage/
+**/dist/
+**/.turbo/
+**/.npm/
+
+# Browser binaries and transient render output
+**/.local-browsers/
+**/ms-playwright/
+**/.puppeteer/
+**/viz/
+**/diagram.mmd
+**/render-*.png
+**/puppeteer.json
+
+# Local deployment metadata and backups
+.deploy-state/
+*.local
+*.local.json
+backups/
+pi-agent-migration-backup-*/
+
+# Explicitly excluded dictation/voice artifacts
+**/pi-dictate/
+**/*dictat*/
+**/*whisper*/
+**/*microphone*/
+**/*audio-record*/
