@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+BACKUP_ROOT="${PI_MIGRATION_BACKUP_ROOT:-$REPO_ROOT/.deploy-state/backups}"
+
+if [[ "${1:-}" == "--backup-root" ]]; then
+  [[ -n "${2:-}" ]] || { echo "--backup-root requires a path" >&2; exit 2; }
+  BACKUP_ROOT="$2"
+  shift 2
+fi
+[[ $# -eq 0 ]] || { echo "Usage: $0 [--backup-root PATH]" >&2; exit 2; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+RUN_BACKUP="$BACKUP_ROOT/deploy-replaced-$STAMP"
+BACKED_UP=0
+
+backup_existing() {
+  local target="$1" relative destination
+  relative="${target#"$HOME"/}"
+  destination="$RUN_BACKUP/$relative"
+  mkdir -p "$(dirname "$destination")"
+  mv "$target" "$destination"
+  BACKED_UP=1
+  echo "Preserved existing path: $target"
+}
+
+link_one() {
+  local source="$1" target="$2"
+  [[ -e "$source" || -L "$source" ]] || { echo "Missing canonical source: $source" >&2; exit 1; }
+  if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$source" ]]; then
+    return 0
+  fi
+  if [[ -e "$target" || -L "$target" ]]; then
+    backup_existing "$target"
+  fi
+  mkdir -p "$(dirname "$target")"
+  ln -s "$source" "$target"
+  echo "Linked: $target -> $source"
+}
+
+link_children() {
+  local source_dir="$1" target_dir="$2" entry
+  mkdir -p "$target_dir"
+  while IFS= read -r -d '' entry; do
+    link_one "$entry" "$target_dir/$(basename "$entry")"
+  done < <(find "$source_dir" -mindepth 1 -maxdepth 1 ! -name '.DS_Store' -print0 | sort -z)
+}
+
+auth_before=""
+[[ -f "$AGENT_DIR/auth.json" ]] && auth_before="$(shasum -a 256 "$AGENT_DIR/auth.json" | awk '{print $1}')"
+
+mkdir -p "$AGENT_DIR" "$AGENT_DIR/agents" "$AGENT_DIR/extensions" "$AGENT_DIR/skills" "$AGENT_DIR/packages"
+link_one "$REPO_ROOT/config/global/settings.json" "$AGENT_DIR/settings.json"
+link_children "$REPO_ROOT/config/global/agents" "$AGENT_DIR/agents"
+link_children "$REPO_ROOT/config/global/extensions" "$AGENT_DIR/extensions"
+link_children "$REPO_ROOT/config/global/skills" "$AGENT_DIR/skills"
+link_one "$REPO_ROOT/upstream/pi-interactive-subagents" "$AGENT_DIR/packages/pi-interactive-subagents"
+link_one "$REPO_ROOT/upstream/pi-observational-memory" "$AGENT_DIR/packages/pi-observational-memory"
+
+mkdir -p "$LEARN_DIR/.pi" "$LEARN_DIR/.pi/agents" "$LEARN_DIR/.pi/extensions" "$LEARN_DIR/.pi/skills"
+link_children "$REPO_ROOT/config/projects/learn/agents" "$LEARN_DIR/.pi/agents"
+link_children "$REPO_ROOT/config/projects/learn/extensions" "$LEARN_DIR/.pi/extensions"
+link_children "$REPO_ROOT/config/projects/learn/skills" "$LEARN_DIR/.pi/skills"
+for entry in README.md .gitignore assets; do
+  [[ -e "$REPO_ROOT/config/projects/learn/$entry" ]] && link_one "$REPO_ROOT/config/projects/learn/$entry" "$LEARN_DIR/.pi/$entry"
+done
+
+# Learn inherits the one global ask-user-question extension. Preserve any project
+# copy instead of loading a second registration.
+if [[ -e "$LEARN_DIR/.pi/extensions/ask-user-question.ts" || -L "$LEARN_DIR/.pi/extensions/ask-user-question.ts" ]]; then
+  backup_existing "$LEARN_DIR/.pi/extensions/ask-user-question.ts"
+fi
+
+if [[ -n "$auth_before" ]]; then
+  auth_after="$(shasum -a 256 "$AGENT_DIR/auth.json" | awk '{print $1}')"
+  [[ "$auth_before" == "$auth_after" ]] || { echo "auth.json changed unexpectedly" >&2; exit 1; }
+fi
+
+if [[ $BACKED_UP -eq 1 ]]; then
+  chmod -R go-rwx "$RUN_BACKUP"
+  echo "Replaced paths preserved in: $RUN_BACKUP"
+else
+  echo "Deployment already current; no paths replaced."
+fi
+

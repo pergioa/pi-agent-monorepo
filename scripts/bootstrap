@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/install-dependencies"
+"$SCRIPT_DIR/deploy" "$@"
+"$SCRIPT_DIR/verify" --local
+

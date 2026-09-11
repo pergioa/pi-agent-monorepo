@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 1 ]] || { echo "Usage: $0 /absolute/path/to/pi-agent-migration-backup-TIMESTAMP" >&2; exit 2; }
+BACKUP_ROOT="$1"
+AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+[[ -d "$BACKUP_ROOT/global-agent" && -d "$BACKUP_ROOT/learn-dot-pi" ]] || { echo "Invalid migration backup: $BACKUP_ROOT" >&2; exit 1; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+STASH="$BACKUP_ROOT/pre-rollback-$STAMP"
+mkdir -m 700 "$STASH"
+
+for name in settings.json agents extensions skills packages git; do
+  target="$AGENT_DIR/$name"
+  if [[ -e "$target" || -L "$target" ]]; then
+    mkdir -p "$STASH/global-agent"
+    mv "$target" "$STASH/global-agent/$name"
+  fi
+  if [[ -e "$BACKUP_ROOT/global-agent/$name" || -L "$BACKUP_ROOT/global-agent/$name" ]]; then
+    ditto "$BACKUP_ROOT/global-agent/$name" "$target"
+  fi
+done
+
+if [[ -e "$LEARN_DIR/.pi" || -L "$LEARN_DIR/.pi" ]]; then
+  mkdir -p "$STASH/learn"
+  mv "$LEARN_DIR/.pi" "$STASH/learn/.pi"
+fi
+ditto "$BACKUP_ROOT/learn-dot-pi" "$LEARN_DIR/.pi"
+
+PI_CONFIG_TARGET="$HOME/studio code/pi-config"
+if [[ -e "$PI_CONFIG_TARGET" || -L "$PI_CONFIG_TARGET" ]]; then
+  mkdir -p "$STASH/studio-code"
+  mv "$PI_CONFIG_TARGET" "$STASH/studio-code/pi-config"
+fi
+ditto "$BACKUP_ROOT/pi-config-clone" "$PI_CONFIG_TARGET"
+
+chmod -R go-rwx "$STASH"
+echo "Rollback complete. The pre-rollback managed state is preserved at: $STASH"
+

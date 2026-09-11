@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+for command in node npm python3 jq; do
+  command -v "$command" >/dev/null || { echo "Required command not found: $command" >&2; exit 1; }
+done
+
+if command -v brew >/dev/null; then
+  missing=()
+  for formula in yt-dlp ffmpeg tmux; do
+    command -v "$formula" >/dev/null || missing+=("$formula")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    brew install "${missing[@]}"
+  fi
+else
+  for command in yt-dlp ffmpeg tmux; do
+    command -v "$command" >/dev/null || { echo "Install $command and rerun this script." >&2; exit 1; }
+  done
+fi
+
+npm_projects=(
+  "$REPO_ROOT/config/global/extensions/bash-guard"
+  "$REPO_ROOT/config/global/extensions/browser"
+  "$REPO_ROOT/config/global/extensions/web-fetch"
+  "$REPO_ROOT/upstream/pi-interactive-subagents"
+  "$REPO_ROOT/upstream/pi-observational-memory"
+  "$REPO_ROOT/config/projects/learn/extensions/visual-tools"
+)
+
+for project in "${npm_projects[@]}"; do
+  echo "Installing locked dependencies: $project"
+  (cd "$project" && npm ci)
+done
+
+pi_package="$(npm root -g)/@earendil-works/pi-coding-agent"
+[[ -d "$pi_package" ]] || { echo "Installed Pi package not found at $pi_package" >&2; exit 1; }
+visual_modules="$REPO_ROOT/config/projects/learn/extensions/visual-tools/node_modules/@earendil-works"
+mkdir -p "$visual_modules"
+mkdir -p "$REPO_ROOT/.deploy-state"
+visual_link="$visual_modules/pi-coding-agent"
+if [[ -e "$visual_link" || -L "$visual_link" ]]; then
+  if [[ ! -L "$visual_link" || "$(readlink "$visual_link")" != "$pi_package" ]]; then
+    mv "$visual_link" "$REPO_ROOT/.deploy-state/pi-coding-agent-dependency-$RANDOM"
+  fi
+fi
+[[ -L "$visual_link" ]] || ln -s "$pi_package" "$visual_link"
+
+echo "Installing matching Playwright Chromium runtime"
+(cd "$REPO_ROOT/config/global/extensions/browser" && npx playwright-core install chromium)
+
+pdf_skill="$REPO_ROOT/config/global/skills/pdf-reader"
+[[ -x "$pdf_skill/.venv/bin/python" ]] || python3 -m venv "$pdf_skill/.venv"
+"$pdf_skill/.venv/bin/python" -m pip install --disable-pip-version-check -r "$pdf_skill/requirements.txt"
+
+echo "Dependency installation complete."

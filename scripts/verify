@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+LEARN_DIR="${PI_LEARN_DIR:-$HOME/studio code/learn}"
+LOCAL_ONLY=0
+[[ "${1:-}" == "--local" ]] && LOCAL_ONLY=1
+[[ $# -le 1 ]] || { echo "Usage: $0 [--local]" >&2; exit 2; }
+
+pass() { echo "PASS: $*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+cd "$REPO_ROOT"
+git rev-parse --show-toplevel >/dev/null
+mapfile_supported=0
+if [[ ${BASH_VERSINFO[0]} -ge 4 ]]; then mapfile_supported=1; fi
+git_dirs="$(find "$REPO_ROOT" -name .git -print)"
+[[ "$git_dirs" == "$REPO_ROOT/.git" ]] || fail "nested or missing Git repository detected"
+pass "exactly one .git directory"
+
+[[ -z "$(git status --porcelain)" ]] || fail "working tree is not clean"
+pass "working tree clean"
+
+"$SCRIPT_DIR/secret-scan"
+pass "secret and runtime-state scan"
+
+excluded_pattern="pi-di""ctate|dict""at|whis""per|micro""phone|audio[-_ ]?record|speech[-_ ]?recogn"
+if git grep -I -i -n -E "$excluded_pattern" -- . ':!scripts/verify'; then
+  fail "excluded component or dependency reference found"
+fi
+pass "excluded component scan"
+
+[[ "$(jq -r '.defaultProvider + "/" + .defaultModel' config/global/settings.json)" == "ollama/qwen3.6:35b-a3b-coding" ]] || fail "global default model mismatch"
+[[ "$(jq -r '."observational-memory".compactAtContextTokens' config/global/settings.json)" == "100000" ]] || fail "observational-memory threshold mismatch"
+for role in observer consolidator; do
+  [[ "$(jq -r --arg role "$role" '."observational-memory".models[$role].provider + "/" + ."observational-memory".models[$role].id' config/global/settings.json)" == "ollama/qwen3.6:35b-a3b-coding" ]] || fail "observational-memory $role model mismatch"
+done
+for role in scout researcher worker; do
+  grep -q '^model: ollama/qwen3.6:35b-a3b-coding$' "config/global/agents/$role.md" || fail "$role override mismatch"
+done
+grep -q '^model: openrouter/z-ai/glm-5.3$' config/projects/learn/agents/researcher.md || fail "Learn researcher model mismatch"
+pass "model and memory configuration"
+
+check_link() {
+  local source="$1" target="$2"
+  [[ -L "$target" ]] || fail "not a symlink: $target"
+  [[ "$(readlink "$target")" == "$source" ]] || fail "wrong symlink target: $target"
+  [[ -e "$target" ]] || fail "broken symlink: $target"
+}
+check_children() {
+  local source_dir="$1" target_dir="$2" entry
+  while IFS= read -r -d '' entry; do
+    check_link "$entry" "$target_dir/$(basename "$entry")"
+  done < <(find "$source_dir" -mindepth 1 -maxdepth 1 ! -name '.DS_Store' -print0 | sort -z)
+}
+
+check_link "$REPO_ROOT/config/global/settings.json" "$AGENT_DIR/settings.json"
+check_children "$REPO_ROOT/config/global/agents" "$AGENT_DIR/agents"
+check_children "$REPO_ROOT/config/global/extensions" "$AGENT_DIR/extensions"
+check_children "$REPO_ROOT/config/global/skills" "$AGENT_DIR/skills"
+check_link "$REPO_ROOT/upstream/pi-interactive-subagents" "$AGENT_DIR/packages/pi-interactive-subagents"
+check_link "$REPO_ROOT/upstream/pi-observational-memory" "$AGENT_DIR/packages/pi-observational-memory"
+check_children "$REPO_ROOT/config/projects/learn/agents" "$LEARN_DIR/.pi/agents"
+check_children "$REPO_ROOT/config/projects/learn/extensions" "$LEARN_DIR/.pi/extensions"
+check_children "$REPO_ROOT/config/projects/learn/skills" "$LEARN_DIR/.pi/skills"
+[[ ! -e "$LEARN_DIR/.pi/extensions/ask-user-question.ts" && ! -L "$LEARN_DIR/.pi/extensions/ask-user-question.ts" ]] || fail "duplicate Learn ask-user-question registration exists"
+pass "all managed symlinks and single ask-user-question registration"
+
+for runtime_path in auth.json sessions models.json models-store.json; do
+  [[ -e "$AGENT_DIR/$runtime_path" ]] || fail "preserved runtime path missing: $runtime_path"
+done
+pass "authentication, sessions, and model state preserved"
+
+npm_projects=(
+  config/global/extensions/bash-guard
+  config/global/extensions/browser
+  config/global/extensions/web-fetch
+  upstream/pi-interactive-subagents
+  upstream/pi-observational-memory
+  config/projects/learn/extensions/visual-tools
+)
+for project in "${npm_projects[@]}"; do
+  (cd "$REPO_ROOT/$project" && npm audit --omit=dev --audit-level=high)
+done
+pass "npm audits"
+
+(cd config/global/extensions/browser && node --input-type=module -e 'import { chromium } from "playwright-core"; const browser = await chromium.launch({headless:true}); const page = await browser.newPage(); await page.setContent("<title>pi-browser-smoke</title>"); if ((await page.title()) !== "pi-browser-smoke") process.exit(2); await browser.close();')
+pass "Playwright Chromium launch"
+
+mermaid_dir="$REPO_ROOT/config/projects/learn/extensions/visual-tools"
+mermaid_tmp="$(mktemp -d "${TMPDIR:-/tmp}/pi-mermaid-verify.XXXXXX")"
+printf '%s\n' 'graph TD' '  A[Pi] --> B[Learn]' > "$mermaid_tmp/smoke.mmd"
+chrome_path="$(cd "$mermaid_dir" && node --input-type=module -e 'import puppeteer from "puppeteer"; process.stdout.write(puppeteer.executablePath())')"
+node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({executablePath: process.argv[2], args:["--no-sandbox"]}))' "$mermaid_tmp/puppeteer.json" "$chrome_path"
+(cd "$mermaid_dir" && ./node_modules/.bin/mmdc -i "$mermaid_tmp/smoke.mmd" -o "$mermaid_tmp/smoke.png" -p "$mermaid_tmp/puppeteer.json" -b white)
+[[ -s "$mermaid_tmp/smoke.png" ]] || fail "Mermaid output missing"
+pass "Mermaid/Puppeteer real diagram render"
+
+pdf_version="$(config/global/skills/pdf-reader/.venv/bin/python -c 'import fitz; print(fitz.__version__)')"
+[[ "$pdf_version" == "1.27.2.2" ]] || fail "PyMuPDF version is $pdf_version"
+pass "PyMuPDF 1.27.2.2 import"
+
+for command in yt-dlp ffmpeg tmux; do command -v "$command" >/dev/null || fail "$command not installed"; done
+pass "yt-dlp, ffmpeg, and tmux installed"
+
+pi_global_output="$mermaid_tmp/pi-global.out"
+(cd "$HOME" && PI_OFFLINE=1 pi --no-session -p 'Reply exactly PI_SMOKE_OK.' >"$pi_global_output" 2>&1) || { tail -n 40 "$pi_global_output" >&2; fail "global Pi startup/model smoke test"; }
+grep -q 'PI_SMOKE_OK' "$pi_global_output" || fail "global Pi did not use the configured model successfully"
+if grep -Eqi 'duplicate|already registered|extension.*error' "$pi_global_output"; then tail -n 40 "$pi_global_output" >&2; fail "global Pi startup diagnostics"; fi
+pass "global Pi startup with configured Ollama model"
+
+pi_learn_output="$mermaid_tmp/pi-learn.out"
+(cd "$LEARN_DIR" && PI_OFFLINE=1 pi --approve --no-session -p 'Reply exactly LEARN_SMOKE_OK.' >"$pi_learn_output" 2>&1) || { tail -n 40 "$pi_learn_output" >&2; fail "Learn Pi startup/model smoke test"; }
+grep -q 'LEARN_SMOKE_OK' "$pi_learn_output" || fail "Learn Pi smoke response missing"
+if grep -Eqi 'duplicate|already registered|extension.*error' "$pi_learn_output"; then tail -n 40 "$pi_learn_output" >&2; fail "Learn extension diagnostics"; fi
+pass "Learn Pi startup without duplicate registration"
+
+if [[ $LOCAL_ONLY -eq 0 ]]; then
+  gh auth status >/dev/null 2>&1 || fail "GitHub CLI is not authenticated"
+  gh_user="$(gh api user --jq .login)"
+  for repo in pi-config pi-interactive-subagents pi-observational-memory learn; do
+    [[ "$(gh api "repos/$gh_user/$repo" --jq .fork)" == "true" ]] || fail "$gh_user/$repo is not a fork"
+  done
+  visibility="$(gh api "repos/$gh_user/pi-agent-monorepo" --jq .visibility)"
+  [[ "$visibility" == "private" ]] || fail "monorepo visibility is $visibility"
+  remote_url="$(git remote get-url origin)"
+  [[ "$remote_url" == *"$gh_user/pi-agent-monorepo"* ]] || fail "origin does not target the personal monorepo"
+  branch="$(git branch --show-current)"
+  git fetch origin "$branch"
+  [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/$branch")" ]] || fail "local branch is not pushed"
+  pass "four forks and private pushed monorepo"
+fi
+
+echo "All verification checks passed."
+

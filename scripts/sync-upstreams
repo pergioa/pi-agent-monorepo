@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+gh auth status >/dev/null 2>&1 || { echo "Authenticate first: gh auth login -h github.com" >&2; exit 1; }
+gh_user="$(gh api user --jq .login)"
+[[ -z "$(git status --porcelain)" ]] || { echo "Commit or stash local changes before syncing." >&2; exit 1; }
+
+repos=(pi-config pi-interactive-subagents pi-observational-memory learn)
+for repo in "${repos[@]}"; do
+  gh repo sync "$gh_user/$repo" --source "amosblomqvist/$repo" --branch main
+  remote="fork-$repo"
+  url="https://github.com/$gh_user/$repo.git"
+  if git remote get-url "$remote" >/dev/null 2>&1; then
+    git remote set-url "$remote" "$url"
+  else
+    git remote add "$remote" "$url"
+  fi
+  git fetch "$remote" main
+  git subtree pull --prefix "upstream/$repo" "$remote" main --squash
+done
+
+echo "Forks and vendored upstream trees synchronized. Review, verify, and push the monorepo."
+
