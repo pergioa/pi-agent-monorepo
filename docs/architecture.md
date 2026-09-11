@@ -22,13 +22,17 @@ This repository has one top-level Git history and no submodules or nested reposi
 
 The two recorded snapshots came from shallow local clones. Their exact commit IDs preserve provenance without manufacturing history. `scripts/sync-upstreams` first synchronizes each personal fork from the author repository, then performs a squashed subtree pull into the matching prefix.
 
-Expected monorepo remotes after GitHub setup:
+Monorepo remotes:
 
-- `origin`: private personal `pi-agent-monorepo`
-- `fork-pi-config`: personal fork of `pi-config`
-- `fork-pi-interactive-subagents`: personal fork of `pi-interactive-subagents`
-- `fork-pi-observational-memory`: personal fork of `pi-observational-memory`
-- `fork-learn`: personal fork of `learn`
+- `origin`: `https://github.com/pergioa/pi-agent-monorepo.git` (private canonical repository)
+- `fork-pi-config`: `https://github.com/pergioa/pi-config.git`
+- `fork-pi-interactive-subagents`: `https://github.com/pergioa/pi-interactive-subagents.git`
+- `fork-pi-observational-memory`: `https://github.com/pergioa/pi-observational-memory.git`
+- `fork-learn`: `https://github.com/pergioa/learn.git`
+- `upstream-pi-config`: `https://github.com/amosblomqvist/pi-config.git`
+- `upstream-pi-interactive-subagents`: `https://github.com/amosblomqvist/pi-interactive-subagents.git`
+- `upstream-pi-observational-memory`: `https://github.com/amosblomqvist/pi-observational-memory.git`
+- `upstream-learn`: `https://github.com/amosblomqvist/learn.git`
 
 ## Deployment model
 
@@ -37,4 +41,3 @@ Expected monorepo remotes after GitHub setup:
 Global package entries point at `./packages/...` beneath the Pi agent directory. Deployment links those two names to the monorepo vendor trees, making this checkout—not Pi's package cache—the runtime source.
 
 Learn inherits the global ask-user-question extension. Its project tree intentionally omits the identical duplicate, preventing a second tool registration.
-

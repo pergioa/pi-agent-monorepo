@@ -12,16 +12,22 @@ gh_user="$(gh api user --jq .login)"
 repos=(pi-config pi-interactive-subagents pi-observational-memory learn)
 for repo in "${repos[@]}"; do
   gh repo sync "$gh_user/$repo" --source "amosblomqvist/$repo" --branch main
-  remote="fork-$repo"
-  url="https://github.com/$gh_user/$repo.git"
-  if git remote get-url "$remote" >/dev/null 2>&1; then
-    git remote set-url "$remote" "$url"
+  fork_remote="fork-$repo"
+  fork_url="https://github.com/$gh_user/$repo.git"
+  upstream_remote="upstream-$repo"
+  upstream_url="https://github.com/amosblomqvist/$repo.git"
+  if git remote get-url "$fork_remote" >/dev/null 2>&1; then
+    git remote set-url "$fork_remote" "$fork_url"
   else
-    git remote add "$remote" "$url"
+    git remote add "$fork_remote" "$fork_url"
   fi
-  git fetch "$remote" main
-  git subtree pull --prefix "upstream/$repo" "$remote" main --squash
+  if git remote get-url "$upstream_remote" >/dev/null 2>&1; then
+    git remote set-url "$upstream_remote" "$upstream_url"
+  else
+    git remote add "$upstream_remote" "$upstream_url"
+  fi
+  git fetch "$fork_remote" main
+  git subtree pull --prefix "upstream/$repo" "$fork_remote" main --squash
 done
 
 echo "Forks and vendored upstream trees synchronized. Review, verify, and push the monorepo."
-

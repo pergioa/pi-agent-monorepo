@@ -4,6 +4,8 @@ Canonical source for Sergio's Pi agent configuration, selected upstream projects
 
 The repository uses one Git history. Upstream code is imported beneath `upstream/` with subtree provenance; effective configuration lives separately under `config/`. See [architecture](docs/architecture.md) and [inventory](docs/inventory.md).
 
+Private canonical remote: `https://github.com/pergioa/pi-agent-monorepo`
+
 ## Bootstrap and verify
 
 ```bash
