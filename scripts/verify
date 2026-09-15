@@ -71,6 +71,11 @@ fi
 grep -q 'Do not call both agents routinely' config/projects/learn/skills/teach/SKILL.md || fail "Learn hybrid researcher routing policy missing"
 pass "model, memory, hybrid researcher, and OpenRouter-only Anthropic routing configuration"
 
+node --experimental-strip-types --test \
+  config/projects/learn/tests/md-log.test.mjs \
+  config/projects/learn/tests/learn-notes.test.mjs
+pass "Learn markdown logging and structured notebook behavior"
+
 web_search_dir="$REPO_ROOT/config/global/extensions/web-search"
 grep -Fq 'https://api.search.brave.com/res/v1/web/search' "$web_search_dir/index.ts" || fail "Brave Search endpoint missing"
 grep -Fq '"X-Subscription-Token": apiKey' "$web_search_dir/index.ts" || fail "Brave Search authentication header missing"

@@ -6,7 +6,7 @@ Audited on 2026-09-11 with Pi 0.85.1, Node 24.18.0, npm 11.16.0, and Python 3.14
 
 - Global `settings.json`, managed Ollama model definitions, three agent overrides, seven extension entries, and four skills.
 - Local package sources for interactive subagents and observational memory.
-- Learn's four agents, two skills, `md-log`, `quiz`, and `visual-tools` extensions.
+- Learn's four agents, two skills, `md-log`, structured `learn-notes`, `quiz`, and `visual-tools` extensions.
 - Locked JavaScript dependencies and the PDF Reader requirement file.
 
 ## Preserved local behavior

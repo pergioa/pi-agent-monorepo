@@ -12,7 +12,8 @@ This is a personal system I built for myself, shared as-is. Built as a pi config
 - `skills/visualize/` — adds a correct, minimal diagram to a lesson when an idea is clearer as a picture
 - `extensions/ask-user-question/` — the agent asks you questions through a UI popup
 - `extensions/quiz/` — graded questions with instant feedback (✓/✗, correct answer, explanation)
-- `extensions/md-log/` — link a markdown file to the session
+- `extensions/md-log/` — link one markdown transcript file to the session
+- `extensions/learn-notes/` — turn a learning prompt into a linked Obsidian topic hub and lazily created concept notes
 - `extensions/visual-tools/` — tools for visualization subagents
 - `agents/` — local-first `researcher`, hosted `deep-researcher`, `svg-maker`, and `mermaid-maker`: the subagents the system delegates to
 
@@ -54,3 +55,33 @@ key is stored locally outside Git. `web_fetch` does not replace search
 discovery.
 
 The teaching skill is written for one learner (me). Edit the skill to fit how you learn best.
+
+## Structured Obsidian notes
+
+Start a lesson and its notebook together from Pi:
+
+```text
+/learn-notes start I want to understand how transformers turn text into predictions
+```
+
+The text after `start` is a learning prompt, not a filename. Pi derives a
+concise topic title and provisional goal, then creates only a topic hub beneath
+`Learn/` in the current vault. Probing and planning remain in that hub. Once the
+dependency plan is ready, Pi registers its concept notes but creates each file
+only when teaching reaches that concept after plan approval.
+
+The agent normally handles routing. Manual recovery and inspection commands are:
+
+```text
+/learn-notes status
+/learn-notes list
+/learn-notes new Concept title
+/learn-notes use concept-id
+/learn-notes close
+/learn-notes stop
+```
+
+Running `start` without text reuses the most recent user prompt in the active
+branch. `stop` stops structured logging but never deletes the generated files.
+The older `/md-log <existing-file>` command remains available when a literal
+single-file transcript is preferable.

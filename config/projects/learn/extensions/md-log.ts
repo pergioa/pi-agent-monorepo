@@ -3,8 +3,9 @@
  *
  * Designed for long teaching/learning sessions where the terminal is hard on
  * the eyes and markdown/math/code don't render. The linked .md file is meant
- * to be viewed rendered (e.g. in Obsidian), so assistant text with $...$ math,
- * code blocks, and markdown all render natively — no rendering work here.
+ * to be viewed rendered (e.g. in Obsidian), so assistant text with math, code
+ * blocks, and markdown all render natively. Pi's \\(...\\) and \\[...\\]
+ * math delimiters are translated to Obsidian's $...$ and $$...$$ syntax.
  *
  * Captures only reading-relevant content:
  *   - user prompts
@@ -30,6 +31,104 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const QA_TOOLS = new Set(["quiz", "ask_user_question"]);
+
+function replaceLatexDelimiters(text: string): string {
+	function wrap(body: string, delimiter: "$" | "$$"): string {
+		// Some models redundantly emit forms such as \($x$\). Remove that inner
+		// dollar wrapper before applying the Obsidian-compatible outer one.
+		const nested = /^(\s*)(\${1,2})([\s\S]*?)\2(\s*)$/.exec(body);
+		const content = nested ? `${nested[1]}${nested[3]}${nested[4]}` : body;
+		return `${delimiter}${content}${delimiter}`;
+	}
+
+	return text
+		.replace(/(?<!\\)\\\[([\s\S]*?)(?<!\\)\\\]/g, (_match, body: string) => wrap(body, "$$"))
+		.replace(/(?<!\\)\\\(([\s\S]*?)(?<!\\)\\\)/g, (_match, body: string) => wrap(body, "$"));
+}
+
+/**
+ * Convert the LaTeX delimiters rendered by Pi into the dollar delimiters
+ * Obsidian recognizes. Markdown code fences and inline code spans are copied
+ * verbatim so examples containing delimiter syntax are not corrupted.
+ */
+export function normalizeObsidianMath(text: string): string {
+	function normalizeOutsideInlineCode(prose: string): string {
+		let output = "";
+		let proseStart = 0;
+		let searchFrom = 0;
+
+		while (searchFrom < prose.length) {
+			const openingStart = prose.indexOf("`", searchFrom);
+			if (openingStart === -1) break;
+
+			let openingEnd = openingStart + 1;
+			while (prose[openingEnd] === "`") openingEnd++;
+			const delimiterLength = openingEnd - openingStart;
+
+			let candidateStart = openingEnd;
+			let closingEnd = -1;
+			while (candidateStart < prose.length) {
+				candidateStart = prose.indexOf("`", candidateStart);
+				if (candidateStart === -1) break;
+				let candidateEnd = candidateStart + 1;
+				while (prose[candidateEnd] === "`") candidateEnd++;
+				if (candidateEnd - candidateStart === delimiterLength) {
+					closingEnd = candidateEnd;
+					break;
+				}
+				candidateStart = candidateEnd;
+			}
+
+			// An unmatched backtick run is ordinary Markdown text. Leave it in the
+			// prose being normalized and continue looking for a later opener.
+			if (closingEnd === -1) {
+				searchFrom = openingEnd;
+				continue;
+			}
+
+			output += replaceLatexDelimiters(prose.slice(proseStart, openingStart));
+			output += prose.slice(openingStart, closingEnd);
+			proseStart = closingEnd;
+			searchFrom = closingEnd;
+		}
+
+		return output + replaceLatexDelimiters(prose.slice(proseStart));
+	}
+
+	const lines = text.match(/[^\n]*(?:\n|$)/g)?.filter((line) => line.length > 0) ?? [];
+	let output = "";
+	let prose = "";
+	let fenceCharacter: "`" | "~" | null = null;
+	let fenceLength = 0;
+
+	for (const line of lines) {
+		const withoutNewline = line.replace(/\r?\n$/, "");
+
+		if (fenceCharacter) {
+			output += line;
+			const closing = /^ {0,3}(`+|~+)[ \t]*$/.exec(withoutNewline);
+			if (closing && closing[1][0] === fenceCharacter && closing[1].length >= fenceLength) {
+				fenceCharacter = null;
+				fenceLength = 0;
+			}
+			continue;
+		}
+
+		const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(withoutNewline);
+		const validOpening = opening && (opening[1][0] === "~" || !opening[2].includes("`"));
+		if (validOpening && opening) {
+			output += normalizeOutsideInlineCode(prose);
+			prose = "";
+			output += line;
+			fenceCharacter = opening[1][0] as "`" | "~";
+			fenceLength = opening[1].length;
+		} else {
+			prose += line;
+		}
+	}
+
+	return output + normalizeOutsideInlineCode(prose);
+}
 
 export default function mdLog(pi: ExtensionAPI) {
 	let logFile: string | null = null;
@@ -83,14 +182,14 @@ export default function mdLog(pi: ExtensionAPI) {
 
 	function callout(type: string, title: string, bodyLines: string[]): string {
 		const lines = [`> [!${type}] ${title}`];
-		for (const line of bodyLines) {
+		for (const line of normalizeObsidianMath(bodyLines.join("\n")).split("\n")) {
 			lines.push(line.length === 0 ? ">" : `> ${line}`);
 		}
 		return lines.join("\n");
 	}
 
 	function userBlock(text: string): string {
-		return `> [!quote] YOU\n\n${text}`;
+		return `> [!quote] YOU\n\n${normalizeObsidianMath(text)}`;
 	}
 
 	// Skill declarations (`<skill name="..." ...> ...whole SKILL.md... </skill>`)
@@ -108,7 +207,7 @@ export default function mdLog(pi: ExtensionAPI) {
 	}
 
 	function assistantBlock(text: string): string {
-		return `> [!abstract] PI\n\n${text}`;
+		return `> [!abstract] PI\n\n${normalizeObsidianMath(text)}`;
 	}
 
 	function optionsList(options: Array<{ label: string }>): string[] {
