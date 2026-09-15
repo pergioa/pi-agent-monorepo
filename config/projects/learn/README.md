@@ -46,8 +46,11 @@ call both. You can invoke either explicitly from Pi inside tmux:
 /subagent deep-researcher <question and any unresolved local findings>
 ```
 
-The hosted fallback requires locally configured OpenRouter authentication. Both
-researchers use the globally managed Brave-backed `web_search` tool; its key is
-stored locally outside Git. `web_fetch` does not replace search discovery.
+The hosted fallback and both visual makers require locally configured
+OpenRouter authentication. The visual makers route Claude through OpenRouter;
+the effective Learn configuration never calls the Anthropic provider directly.
+Both researchers use the globally managed Brave-backed `web_search` tool; its
+key is stored locally outside Git. `web_fetch` does not replace search
+discovery.
 
 The teaching skill is written for one learner (me). Edit the skill to fit how you learn best.

@@ -33,6 +33,25 @@ fi
 pass "excluded component scan"
 
 [[ "$(jq -r '.defaultProvider + "/" + .defaultModel' config/global/settings.json)" == "ollama/qwen3.6:35b-a3b-coding" ]] || fail "global default model mismatch"
+ollama_models=config/global/ollama-models.json
+jq -e '
+  .providers.ollama
+  | .baseUrl == "http://localhost:11434/v1"
+    and .api == "openai-completions"
+    and .compat.supportsDeveloperRole == false
+    and .compat.supportsStore == false
+    and .compat.maxTokensField == "max_tokens"
+' "$ollama_models" >/dev/null || fail "Ollama provider compatibility metadata mismatch"
+for model in qwen3.6:35b-a3b-coding qwen3.8:27b-mlx; do
+  jq -e --arg model "$model" '
+    .providers.ollama.models[]
+    | select(.id == $model)
+    | .reasoning == true
+      and .input == ["text", "image"]
+      and .contextWindow == 262144
+      and .maxTokens == 16384
+  ' "$ollama_models" >/dev/null || fail "$model capability metadata mismatch"
+done
 [[ "$(jq -r '."observational-memory".compactAtContextTokens' config/global/settings.json)" == "100000" ]] || fail "observational-memory threshold mismatch"
 for role in observer consolidator; do
   [[ "$(jq -r --arg role "$role" '."observational-memory".models[$role].provider + "/" + ."observational-memory".models[$role].id' config/global/settings.json)" == "ollama/qwen3.6:35b-a3b-coding" ]] || fail "observational-memory $role model mismatch"
@@ -43,8 +62,14 @@ done
 grep -q '^model: ollama/qwen3.6:35b-a3b-coding$' config/projects/learn/agents/researcher.md || fail "Learn local researcher model mismatch"
 grep -q '^name: deep-researcher$' config/projects/learn/agents/deep-researcher.md || fail "Learn deep researcher name mismatch"
 grep -q '^model: openrouter/z-ai/glm-5.3$' config/projects/learn/agents/deep-researcher.md || fail "Learn deep researcher model mismatch"
+for role in mermaid-maker svg-maker; do
+  grep -q '^model: openrouter/anthropic/claude-sonnet-5$' "config/projects/learn/agents/$role.md" || fail "Learn $role OpenRouter model mismatch"
+done
+if git grep -n -E '^model: anthropic/|"provider"[[:space:]]*:[[:space:]]*"anthropic"' -- config; then
+  fail "effective configuration contains a direct Anthropic model route"
+fi
 grep -q 'Do not call both agents routinely' config/projects/learn/skills/teach/SKILL.md || fail "Learn hybrid researcher routing policy missing"
-pass "model, memory, and hybrid researcher configuration"
+pass "model, memory, hybrid researcher, and OpenRouter-only Anthropic routing configuration"
 
 web_search_dir="$REPO_ROOT/config/global/extensions/web-search"
 grep -Fq 'https://api.search.brave.com/res/v1/web/search' "$web_search_dir/index.ts" || fail "Brave Search endpoint missing"
@@ -73,6 +98,7 @@ check_children() {
 }
 
 check_link "$REPO_ROOT/config/global/settings.json" "$AGENT_DIR/settings.json"
+check_link "$REPO_ROOT/config/global/ollama-models.json" "$AGENT_DIR/models.json"
 check_children "$REPO_ROOT/config/global/agents" "$AGENT_DIR/agents"
 check_children "$REPO_ROOT/config/global/extensions" "$AGENT_DIR/extensions"
 check_children "$REPO_ROOT/config/global/skills" "$AGENT_DIR/skills"
@@ -84,10 +110,10 @@ check_children "$REPO_ROOT/config/projects/learn/skills" "$LEARN_DIR/.pi/skills"
 [[ ! -e "$LEARN_DIR/.pi/extensions/ask-user-question.ts" && ! -L "$LEARN_DIR/.pi/extensions/ask-user-question.ts" ]] || fail "duplicate Learn ask-user-question registration exists"
 pass "all managed symlinks and single ask-user-question registration"
 
-for runtime_path in auth.json sessions models.json models-store.json; do
+for runtime_path in auth.json sessions models-store.json; do
   [[ -e "$AGENT_DIR/$runtime_path" ]] || fail "preserved runtime path missing: $runtime_path"
 done
-pass "authentication, sessions, and model state preserved"
+pass "authentication, sessions, and generated model catalog preserved"
 
 npm_projects=(
   config/global/extensions/bash-guard

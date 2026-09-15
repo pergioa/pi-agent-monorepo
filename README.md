@@ -76,7 +76,7 @@ Review upstream changes before committing, especially where `overrides/README.md
 
 ## Roll back
 
-Rollback is non-destructive: it moves the current managed state into the backup before restoring the audited snapshot. Current credentials, sessions, and model metadata are not replaced.
+Rollback is non-destructive: it moves the current managed state into the backup before restoring the audited snapshot. Current credentials, sessions, and generated model catalog are not replaced.
 
 ```bash
 cd "$HOME/studio code/pi-agent-monorepo"
@@ -85,7 +85,12 @@ cd "$HOME/studio code/pi-agent-monorepo"
 
 ## Credentials
 
-The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` retains `openrouter/z-ai/glm-5.3` and requires OpenRouter authentication when used.
+The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` uses `openrouter/z-ai/glm-5.3`; its visual makers use `openrouter/anthropic/claude-sonnet-5`. These hosted agents require OpenRouter authentication when used. No effective configuration routes a model directly through the Anthropic provider.
+
+The managed Ollama model definitions declare vision and reasoning support for
+`qwen3.6:35b-a3b-coding` and `qwen3.8:27b-mlx`, so Pi passes image attachments
+and rendered tool output to either local model. The visual makers remain on
+OpenRouter unless their agent definitions are changed explicitly.
 
 `web_search` uses Brave Search. Put the Brave key in the empty
 `brave_search_api_key` field in

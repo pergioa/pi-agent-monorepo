@@ -55,6 +55,7 @@ auth_before=""
 
 mkdir -p "$AGENT_DIR" "$AGENT_DIR/agents" "$AGENT_DIR/extensions" "$AGENT_DIR/skills" "$AGENT_DIR/packages"
 link_one "$REPO_ROOT/config/global/settings.json" "$AGENT_DIR/settings.json"
+link_one "$REPO_ROOT/config/global/ollama-models.json" "$AGENT_DIR/models.json"
 link_children "$REPO_ROOT/config/global/agents" "$AGENT_DIR/agents"
 link_children "$REPO_ROOT/config/global/extensions" "$AGENT_DIR/extensions"
 link_children "$REPO_ROOT/config/global/skills" "$AGENT_DIR/skills"

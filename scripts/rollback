@@ -11,7 +11,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)-$$"
 STASH="$BACKUP_ROOT/pre-rollback-$STAMP"
 mkdir -m 700 "$STASH"
 
-for name in settings.json agents extensions skills packages git; do
+for name in settings.json models.json agents extensions skills packages git; do
   target="$AGENT_DIR/$name"
   if [[ -e "$target" || -L "$target" ]]; then
     mkdir -p "$STASH/global-agent"

@@ -5,11 +5,11 @@ This repository has one top-level Git history and no submodules or nested reposi
 ## Layers
 
 - `upstream/` contains imported source trees and their upstream histories or recorded snapshot commits.
-- `config/global/` is the canonical source for managed global Pi settings, agent overrides, extensions, and skills.
+- `config/global/` is the canonical source for managed global Pi settings, Ollama model definitions, agent overrides, extensions, and skills.
 - `config/projects/learn/` is the canonical source for Learn's project-local Pi resources.
 - `overrides/` documents why the effective configuration differs from the vendor trees.
 - `scripts/` installs dependencies, deploys explicit links, verifies the machine, synchronizes sources, and rolls back.
-- Pi credentials, sessions, model metadata, generated memory, browser state, caches, and logs remain outside Git.
+- Pi credentials, sessions, the generated model catalog, generated memory, browser state, caches, and logs remain outside Git.
 
 ## Vendor provenance
 
@@ -36,7 +36,7 @@ Monorepo remotes:
 
 ## Deployment model
 
-`scripts/deploy` calculates the repository root from its own location, so spaces in the path are safe. It creates absolute symlinks only for individual managed files or top-level resource entries. It does not replace `~/.pi/agent`, and it does not touch credentials, sessions, model data, generated memory, caches, logs, or unrelated resources.
+`scripts/deploy` calculates the repository root from its own location, so spaces in the path are safe. It creates absolute symlinks only for individual managed files or top-level resource entries. It does not replace `~/.pi/agent`, and it does not touch credentials, sessions, the generated `models-store.json` catalog, generated memory, caches, logs, or unrelated resources. The non-secret Ollama definitions are managed from `config/global/ollama-models.json` and deployed as `~/.pi/agent/models.json`.
 
 Global package entries point at `./packages/...` beneath the Pi agent directory. Deployment links those two names to the monorepo vendor trees, making this checkout—not Pi's package cache—the runtime source.
 
