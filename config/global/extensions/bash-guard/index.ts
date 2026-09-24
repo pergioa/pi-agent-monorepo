@@ -346,7 +346,7 @@ async function promptRunOrAbort(ctx: any, command: string, risk: Risk): Promise<
 				tui.requestRender();
 			},
 		};
-	}, { overlay: true });
+	});
 
 	return choice ?? "abort";
 }
