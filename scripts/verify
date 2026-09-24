@@ -69,12 +69,15 @@ if git grep -n -E '^model: anthropic/|"provider"[[:space:]]*:[[:space:]]*"anthro
   fail "effective configuration contains a direct Anthropic model route"
 fi
 grep -q 'Do not call both agents routinely' config/projects/learn/skills/teach/SKILL.md || fail "Learn hybrid researcher routing policy missing"
+grep -q '^name: implementation-coach$' config/global/skills/implementation-coach/SKILL.md || fail "implementation coach skill metadata missing"
+grep -Fq "Do not edit implementation or test files" config/global/skills/implementation-coach/SKILL.md || fail "guided coach edit guardrail missing"
 pass "model, memory, hybrid researcher, and OpenRouter-only Anthropic routing configuration"
 
 node --experimental-strip-types --test \
+  config/global/tests/assignment-coach.test.mjs \
   config/projects/learn/tests/md-log.test.mjs \
   config/projects/learn/tests/learn-notes.test.mjs
-pass "Learn markdown logging and structured notebook behavior"
+pass "assignment coach, Learn markdown logging, and structured notebook behavior"
 
 web_search_dir="$REPO_ROOT/config/global/extensions/web-search"
 grep -Fq 'https://api.search.brave.com/res/v1/web/search' "$web_search_dir/index.ts" || fail "Brave Search endpoint missing"

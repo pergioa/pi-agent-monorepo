@@ -58,6 +58,32 @@ Inside Pi, browser automation and observational memory are both opt-in:
 
 Their explicit off commands are `/browser off` and `/om off`.
 
+## Assignment coach
+
+The implementation coach is globally available from any directory and remains
+inactive during ordinary Pi sessions. Start it inside the assignment repository:
+
+```text
+/coach start Implement password-reset token validation
+```
+
+It defaults to `guided` mode: Pi may inspect the repository and run checks, but
+you write the implementation unless you explicitly ask it to edit. The other
+modes are `pair` for approved small alternating changes and `demo` for an
+explained autonomous implementation.
+
+```text
+/coach mode guided|pair|demo
+/coach status
+/coach hint
+/coach explain <concept or question>
+/coach check
+/coach stop
+```
+
+Coach progress is stored in the Pi session and survives reloads. Start a new Pi
+session when you want an independent assignment history.
+
 ## Update and redeploy
 
 Synchronize the personal forks from the author's repositories and subtree-pull them into this monorepo:

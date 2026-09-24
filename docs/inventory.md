@@ -4,7 +4,7 @@ Audited on 2026-09-11 with Pi 0.85.1, Node 24.18.0, npm 11.16.0, and Python 3.14
 
 ## Canonical managed resources
 
-- Global `settings.json`, managed Ollama model definitions, three agent overrides, seven extension entries, and four skills.
+- Global `settings.json`, managed Ollama model definitions, three agent overrides, eight extension entries, and five skills, including the opt-in assignment coach.
 - Local package sources for interactive subagents and observational memory.
 - Learn's four agents, two skills, `md-log`, structured `learn-notes`, `quiz`, and `visual-tools` extensions.
 - Locked JavaScript dependencies and the PDF Reader requirement file.
