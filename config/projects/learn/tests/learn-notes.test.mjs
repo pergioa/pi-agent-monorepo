@@ -67,11 +67,28 @@ test("opening a concept creates it, routes blocks idempotently, and closing retu
 		assert.equal(fs.existsSync(conceptFile), true);
 		assert.equal(appendGeneratedBlock(conceptFile, "entry-1", "First explanation"), true);
 		assert.equal(appendGeneratedBlock(conceptFile, "entry-1", "Duplicate explanation"), false);
-		assert.doesNotMatch(fs.readFileSync(conceptFile, "utf-8"), /Duplicate explanation/);
+		const concept = fs.readFileSync(conceptFile, "utf-8");
+		assert.match(concept, /<!-- learn-notes:block:entry-1 -->/);
+		assert.doesNotMatch(concept, /Duplicate explanation/);
 
 		state = closeConcept(state);
 		assert.equal(currentOutputFile(state), state.hubFile);
 		assert.match(fs.readFileSync(conceptFile, "utf-8"), /Status: complete/);
+	});
+});
+
+test("preserves existing Markdown and generated callouts verbatim", () => {
+	withTempDirectory((cwd) => {
+		const file = path.join(cwd, "lesson.md");
+		const existing = "# User heading\n\nKeep **this Markdown** and this hard break.  \n";
+		const callout = "> [!question] Quiz\n> What is 2 + 2?\n>\n> 1. 4";
+		fs.writeFileSync(file, existing, "utf-8");
+
+		assert.equal(appendGeneratedBlock(file, "question-call_2", callout), true);
+		assert.equal(
+			fs.readFileSync(file, "utf-8"),
+			`${existing}\n<!-- learn-notes:block:question-call_2 -->\n${callout}\n`,
+		);
 	});
 });
 

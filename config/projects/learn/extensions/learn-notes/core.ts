@@ -419,7 +419,10 @@ export function appendGeneratedBlock(file: string, blockId: string, markdown: st
 	const marker = `<!-- learn-notes:block:${safeId} -->`;
 	const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "";
 	if (existing.includes(marker)) return false;
-	const prefix = existing.trim().length > 0 ? "\n\n" : "";
-	atomicWrite(file, `${existing.trimEnd()}${prefix}${marker}\n${markdown.trim()}\n`);
+	let separator = "";
+	if (existing.length > 0 && !existing.endsWith("\n\n")) {
+		separator = existing.endsWith("\n") ? "\n" : "\n\n";
+	}
+	atomicWrite(file, `${existing}${separator}${marker}\n${markdown.trim()}\n`);
 	return true;
 }
