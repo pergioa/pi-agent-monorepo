@@ -1,136 +1,24 @@
 # Pi Agent Monorepo
 
-Canonical source for Sergio's Pi agent configuration, selected upstream projects, personal overrides, and Learn project configuration.
+Personal [Pi](https://github.com/badlogic/pi-mono) setup with one Git history: managed global configuration, a Learn project, and locally maintained upstream packages. `config/` contains the effective setup; `upstream/` contains imported sources; `overrides/` records local differences. See [architecture](docs/architecture.md) for the deployment layout.
 
-The repository uses one Git history. Upstream code is imported beneath `upstream/` with subtree provenance; effective configuration lives separately under `config/`. See [architecture](docs/architecture.md) and [inventory](docs/inventory.md).
+## Features
 
-Private canonical remote: `https://github.com/pergioa/pi-agent-monorepo`
+- **Models and agents:** OpenAI Codex (`gpt-6-sol`, high thinking) is the global default. Local Ollama models support reasoning and images; agent profiles can select other models, including OpenRouter.
+- **Subagents:** Asynchronous `scout`, `researcher`, and `worker` profiles run headlessly with restricted tools; interactive profiles use tmux. Spawn with `/subagent <agent> <task>`, inspect live output with `/subagents` or `Ctrl+Alt+S`, and send follow-ups by name with `subagent_message`. Forked sessions, nested delegation, question/answer handoffs, and restricted resume are supported. [Details](upstream/pi-interactive-subagents/README.md).
+- **Observational memory:** Opt-in session memory with local Ollama observation and consolidation (`/om on`, `/om off`).
+- **Global tools and skills:** Brave web search, web fetch, browser automation (`/browser on`), guarded shell commands, prompt snippets, question popups, PDF reading, web debugging, video transcripts, and session analysis.
+- **Assignment coach:** `/coach start <task>` starts a guided coding workflow; `/coach mode guided|pair|demo` selects the level of hands-on help. `/coach stop` exits. The coach stays inactive outside an assignment.
+- **Learn project:** Guided teaching and quizzes, local-first research with optional hosted escalation, diagrams, Markdown session logs, and linked Obsidian concept notes (`/learn-notes start <topic>`). [Details](config/projects/learn/README.md).
 
-## Bootstrap and verify
-
-```bash
-cd "$HOME/studio code/pi-agent-monorepo"
-./scripts/bootstrap --backup-root "$HOME/pi-agent-migration-backup-20260911-123000"
-./scripts/verify
-```
-
-`bootstrap` installs locked dependencies, deploys explicit managed symlinks, and runs local verification. `verify` also checks GitHub forks and the private remote; use `./scripts/verify --local` before GitHub setup.
-
-## Launch
-
-Ordinary Pi:
+## Use and maintain
 
 ```bash
-pi
+./scripts/bootstrap --backup-root "$HOME/pi-agent-backup" # install, deploy managed links, verify
+pi                                                    # ordinary session
+./scripts/verify --local                              # check local installation
 ```
 
-Learn (approve the project resources on the first launch):
+Learn runs from the Obsidian vault at `$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes` by default; set `PI_LEARN_DIR` to target a different project. Start Pi inside tmux only when you want visible interactive subagents.
 
-```bash
-cd "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Uni-notes"
-pi --approve
-```
-
-Interactive subagents require Pi to run inside tmux:
-
-```bash
-tmux new-session -A -s pi-agent
-pi
-```
-
-Learn research is hybrid and local-first. Routine teaching automatically uses
-the Ollama-backed `researcher`. Difficult, high-stakes, conflicting, or
-unresolved questions may escalate to the separately named OpenRouter-backed
-`deep-researcher`; routine work does not call both. They can also be selected
-manually inside Pi:
-
-```text
-/subagent researcher <question>
-/subagent deep-researcher <question and unresolved local findings>
-```
-
-Inside Pi, browser automation and observational memory are both opt-in:
-
-```text
-/browser on
-/om on
-```
-
-Their explicit off commands are `/browser off` and `/om off`.
-
-## Assignment coach
-
-The implementation coach is globally available from any directory and remains
-inactive during ordinary Pi sessions. Start it inside the assignment repository:
-
-```text
-/coach start Implement password-reset token validation
-```
-
-It defaults to `guided` mode: Pi may inspect the repository and run checks, but
-you write the implementation unless you explicitly ask it to edit. The other
-modes are `pair` for approved small alternating changes and `demo` for an
-explained autonomous implementation.
-
-```text
-/coach mode guided|pair|demo
-/coach status
-/coach hint
-/coach explain <concept or question>
-/coach check
-/coach stop
-```
-
-Coach progress is stored in the Pi session and survives reloads. Start a new Pi
-session when you want an independent assignment history.
-
-## Update and redeploy
-
-Synchronize the personal forks from the author's repositories and subtree-pull them into this monorepo:
-
-```bash
-cd "$HOME/studio code/pi-agent-monorepo"
-./scripts/sync-upstreams
-git status
-./scripts/install-dependencies
-./scripts/deploy
-./scripts/verify
-git push origin main
-```
-
-Review upstream changes before committing, especially where `overrides/README.md` identifies a local compatibility layer.
-
-## Roll back
-
-Rollback is non-destructive: it moves the current managed state into the backup before restoring the audited snapshot. Current credentials, sessions, and generated model catalog are not replaced.
-
-```bash
-cd "$HOME/studio code/pi-agent-monorepo"
-./scripts/rollback "$HOME/pi-agent-migration-backup-20260911-123000"
-```
-
-## Credentials
-
-The main workflow and Learn's default researcher use Ollama and need no hosted-provider secret. Learn's optional `deep-researcher` uses `openrouter/z-ai/glm-5.3`; its visual makers use `openrouter/anthropic/claude-sonnet-5`. These hosted agents require OpenRouter authentication when used. No effective configuration routes a model directly through the Anthropic provider.
-
-The managed Ollama model definitions declare vision and reasoning support for
-`qwen3.6:35b-a3b-coding` and `qwen3.8:27b-mlx`, so Pi passes image attachments
-and rendered tool output to either local model. The visual makers remain on
-OpenRouter unless their agent definitions are changed explicitly.
-
-`web_search` uses Brave Search. Put the Brave key in the empty
-`brave_search_api_key` field in
-`config/global/extensions/web-search/auth.json`. This local file is ignored by
-Git and must remain mode `0600`. Alternatively, provide
-`BRAVE_SEARCH_API_KEY` in Pi's environment. Verify the configured key with:
-
-```bash
-cd "$HOME/studio code/pi-agent-monorepo"
-./scripts/verify-web-search
-```
-
-No credential is invented or committed by this repository.
-
-The deployment, verification, and rollback scripts default to this Obsidian
-vault as the active Learn project. To target a different Learn project for one
-run, set `PI_LEARN_DIR` to its absolute path.
+`./scripts/sync-upstreams` updates the imported projects; `./scripts/install-dependencies`, `./scripts/deploy`, and `./scripts/verify` refresh and check the installation. `./scripts/rollback <migration-snapshot-dir>` restores the original migration snapshot. Credentials, sessions, memory, and browser state stay outside Git. Hosted agents need local OpenRouter authentication; Brave search needs `BRAVE_SEARCH_API_KEY` or an ignored `config/global/extensions/web-search/auth.json`.
