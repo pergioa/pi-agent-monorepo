@@ -15,8 +15,15 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity.ts";
+import { createLiveTranscriptRecorder } from "./transcript.ts";
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  const temporaryPath = `${path}.tmp-${process.pid}-${Math.random().toString(16).slice(2, 10)}`;
+  writeFileSync(temporaryPath, JSON.stringify(value));
+  renameSync(temporaryPath, path);
+}
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
@@ -120,6 +127,7 @@ export default function (pi: ExtensionAPI) {
   const subagentAgent = process.env.PI_SUBAGENT_AGENT ?? "";
   const deniedToolsValue = process.env.PI_DENY_TOOLS;
   const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
+  const rpcManaged = process.env.PI_SUBAGENT_RPC === "1";
   const recorder = createSubagentActivityRecorder({
     runningChildId: process.env.PI_SUBAGENT_ID,
     activityFile: process.env.PI_SUBAGENT_ACTIVITY_FILE,
@@ -176,6 +184,7 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
+  const liveTranscript = createLiveTranscriptRecorder(process.env.PI_SUBAGENT_SESSION);
   let userTookOver = false;
   let agentStarted = false;
   // Set when ask_question is called; suppresses auto-exit so the session stays
@@ -187,6 +196,7 @@ export default function (pi: ExtensionAPI) {
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
     recorder.sessionStart();
+    liveTranscript.start();
     const tools = pi.getAllTools();
     toolNames = tools.map((t) => t.name).sort();
     denied = parseDeniedTools(deniedToolsValue);
@@ -249,13 +259,13 @@ export default function (pi: ExtensionAPI) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION;
       if (errorInfo && sessionFile) {
         try {
-          writeFileSync(
+          writeJsonAtomic(
             `${sessionFile}.exit`,
-            JSON.stringify({
+            {
               type: "error",
               errorMessage: errorInfo.errorMessage,
               stopReason: errorInfo.stopReason,
-            }),
+            },
           );
         } catch {
           // Best effort — even without the sidecar, watcher's session-file
@@ -264,7 +274,11 @@ export default function (pi: ExtensionAPI) {
       }
 
       recorder.agentEndDone();
-      ctx.shutdown();
+      // RPC children are closed by the parent supervisor after it observes the
+      // structured terminal events. Requesting RPC shutdown here leaves a
+      // latent flag that can kill a parked question reply or queued retry when
+      // the next command arrives.
+      if (!rpcManaged) ctx.shutdown();
       return;
     }
 
@@ -294,6 +308,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_update", (event) => {
     recorder.messageUpdate((event as any).assistantMessageEvent?.type);
+    liveTranscript.update((event as any).message);
+  });
+
+  pi.on("message_end", () => {
+    liveTranscript.end();
   });
 
   pi.on("tool_execution_start", (event) => {
@@ -318,6 +337,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (event) => {
     recorder.sessionShutdown((event as any).reason);
+    liveTranscript.stop();
   });
 
   // Toggle expand/collapse with Ctrl+Alt+O
@@ -366,14 +386,14 @@ export default function (pi: ExtensionAPI) {
       // Keep the session open: suppress auto-exit for this turn and park in the
       // "waiting" phase. The parent's watcher picks up the `.ask` signal and
       // notifies the orchestrator, who replies via subagent_message.
-      awaitingAnswer = true;
-      recorder.askQuestion();
       const askData = {
         name: process.env.PI_SUBAGENT_NAME ?? "subagent",
         agent: process.env.PI_SUBAGENT_AGENT ?? "",
         question: params.question,
       };
-      writeFileSync(`${sessionFile}.ask`, JSON.stringify(askData));
+      writeJsonAtomic(`${sessionFile}.ask`, askData);
+      awaitingAnswer = true;
+      recorder.askQuestion();
 
       return {
         content: [

@@ -10,7 +10,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import {
   getAvailableBackends,
   createTestEnv,
@@ -22,7 +22,9 @@ import {
   waitForFocusedSurface,
   untrackSurface,
   sendCommand,
+  sendInput,
   sendLongCommand,
+  isSurfaceDead,
   readScreen,
   readScreenAsync,
   closeSurface,
@@ -140,6 +142,20 @@ for (const backend of backends) {
         screen.includes("_END"),
         `Expected full output (not truncated). Got:\n${screen.slice(-300)}`,
       );
+    });
+
+    it("does not leave a shell that can execute late steering input", async () => {
+      const surface = createTrackedSurface(env, "late-steer-test");
+      const markerFile = `/tmp/pi-integ-late-steer-${uniqueId()}.txt`;
+      trackTempFile(env, markerFile);
+      await sleep(1000);
+      sendLongCommand(surface, "true");
+
+      const deadline = Date.now() + 10_000;
+      while (!isSurfaceDead(surface) && Date.now() < deadline) await sleep(100);
+      assert.equal(isSurfaceDead(surface), true, "launch script should replace and exit the pane shell");
+      assert.throws(() => sendInput(surface, `touch '${markerFile}'`), /no longer active/);
+      assert.equal(existsSync(markerFile), false);
     });
 
     it("reads screen asynchronously", async () => {

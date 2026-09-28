@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import {
   nameRegistryPath,
   writeSubagentLoadout,
   loadoutSidecarPath,
+  SUBAGENT_LOADOUT_VERSION,
   type SubagentLoadout,
   resetSessionIndexCache,
   resolveSessionFileById,
@@ -30,7 +31,7 @@ import {
   summarizeSessionStats,
 } from "../pi-extension/subagents/session.ts";
 
-import { shellEscape } from "../pi-extension/subagents/tmux.ts";
+import { pollForExit, shellEscape } from "../pi-extension/subagents/tmux.ts";
 import {
   advanceStatusState,
   capStatusLines,
@@ -56,6 +57,7 @@ import {
   runningChildrenCount,
 } from "../pi-extension/subagents/subagent-done.ts";
 import subagentDoneExtension from "../pi-extension/subagents/subagent-done.ts";
+import { createLiveTranscriptRecorder, liveTranscriptPath, readLiveTranscript, readTranscript } from "../pi-extension/subagents/transcript.ts";
 import { __pollForExitTest__ } from "../pi-extension/subagents/tmux.ts";
 
 // --- Helpers ---
@@ -83,12 +85,14 @@ function withTempDir(run: (dir: string) => void) {
 function createMockExtensionApi() {
   const registeredTools: Array<any> = [];
   const registeredCommands: Array<any> = [];
+  const registeredShortcuts: Array<any> = [];
   const registeredMessageRenderers: Array<any> = [];
   const sentUserMessages: string[] = [];
   const sentMessages: Array<any> = [];
   return {
     registeredTools,
     registeredCommands,
+    registeredShortcuts,
     registeredMessageRenderers,
     sentUserMessages,
     sentMessages,
@@ -103,7 +107,9 @@ function createMockExtensionApi() {
       registerMessageRenderer(name: string, renderer: any) {
         registeredMessageRenderers.push({ name, renderer });
       },
-      registerShortcut() {},
+      registerShortcut(shortcut: string, options: any) {
+        registeredShortcuts.push({ shortcut, ...options });
+      },
       sendUserMessage(message: string) {
         sentUserMessages.push(message);
       },
@@ -220,6 +226,198 @@ const TOOL_RESULT = {
 
 // --- Tests ---
 
+describe("subagent inspector transcript", () => {
+  const theme = {
+    fg(_color: string, text: string) { return text; },
+    bg(_color: string, text: string) { return text; },
+    bold(text: string) { return text; },
+  };
+  const testApi = (subagentsModule as any).__test__;
+  const agent = (id: string, sessionFile: string) => ({
+    id, name: id, agent: "scout", task: "Investigate", runtime: { kind: "headless", process: {} },
+    startTime: Date.now(), sessionFile, interactive: false,
+    statusState: createStatusState({ source: "pi", startTimeMs: Date.now() }),
+  });
+
+  it("shows the selected name and compact navigation after following long transcripts and switching agents", async () => {
+    const dir = createTestDir();
+    try {
+      const registry = testApi.runningSubagents as Map<string, any>;
+      const first = agent("Scout", createSessionFile(dir, [SESSION_HEADER, ...Array.from({ length: 80 }, (_, i) => ({
+        type: "message", message: { role: "assistant", content: [{ type: "text", text: `Scout entry ${i}` }] },
+      }))]));
+      const secondFile = join(dir, "second.jsonl");
+      writeFileSync(secondFile, [SESSION_HEADER, ...Array.from({ length: 80 }, (_, i) => ({
+        type: "message", message: { role: "assistant", content: [{ type: "text", text: `Worker entry ${i}` }] },
+      }))].map(JSON.stringify).join("\n") + "\n");
+      const second = agent("Worker", secondFile);
+      registry.set(first.id, first);
+      registry.set(second.id, second);
+      let modal: any;
+      try {
+        const shown = testApi.showSubagentDetails({ hasUI: true, ui: {
+          custom(factory: any) {
+            return new Promise<void>((resolve) => {
+              modal = factory({ terminal: { rows: 18 }, requestRender() {} }, theme, {}, resolve);
+            });
+          },
+        } }, "Scout");
+        const scout = modal.render(38);
+        assert.match(scout[0], /Scout/);
+        assert.ok(scout.some((line: string) => line.includes("Scout entry 79")));
+        assert.match(scout.at(-1), /agent/);
+        modal.handleInput("\x1b[C");
+        const worker = modal.render(38);
+        assert.match(worker[0], /Worker/);
+        assert.doesNotMatch(worker[0], /Scout/);
+        assert.ok(worker.some((line: string) => line.includes("Worker entry 79")));
+        assert.ok(worker.every((line: string) => visibleWidth(line) <= 38));
+        modal.handleInput("q");
+        await shown;
+      } finally {
+        modal?.dispose();
+        registry.delete(first.id);
+        registry.delete(second.id);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips seeded parent context across refreshes while retaining all child output", () => {
+    withTempDir((dir) => {
+      const parent = createSessionFile(dir, [SESSION_HEADER,
+        { type: "message", message: { role: "user", content: "parent request" } },
+        { type: "message", message: { role: "assistant", content: [{ type: "text", text: "parent answer" }] } },
+        USER_MSG,
+      ]);
+      const child = join(dir, "fork.jsonl");
+      seedSubagentSessionFile({ mode: "fork", parentSessionFile: parent, childSessionFile: child, childCwd: dir });
+      const cache = { blocks: [] as Array<{ label: string; text: string }> };
+      appendFileSync(child, JSON.stringify({ type: "message", message: { role: "user", content: "child request" } }) + "\n");
+      assert.deepEqual(readTranscript(child, cache), [{ label: "User", text: "child request" }]);
+      appendFileSync(child, [ASSISTANT_MSG_2, { type: "message", message: { role: "assistant", content: [
+        { type: "toolCall", name: "bash", arguments: { command: "pwd" } },
+      ] } }, TOOL_RESULT].map(JSON.stringify).join("\n") + "\n");
+      assert.deepEqual(readTranscript(child, cache).map((block) => block.label),
+        ["User", "Reasoning", "Assistant", "Tool call · bash", "Tool result · bash"]);
+      assert.doesNotMatch(readTranscript(child, cache).map((block) => block.text).join(" "), /parent/);
+    });
+  });
+
+  it("renders non-text tool images and string user messages", () => {
+    withTempDir((dir) => {
+      const file = createSessionFile(dir, [SESSION_HEADER,
+        { type: "message", message: { role: "user", content: "check screenshot" } },
+        { type: "message", message: { role: "toolResult", toolName: "read", content: [
+          { type: "image", mimeType: "image/png", data: "base64-payload" },
+          { type: "text", text: "caption" },
+        ] } },
+      ]);
+      const blocks = readTranscript(file, { blocks: [] });
+      assert.deepEqual(blocks, [
+        { label: "User", text: "check screenshot" },
+        { label: "Tool result · read", text: "[Image · image/png]" },
+        { label: "Tool result · read", text: "caption" },
+      ]);
+    });
+  });
+
+  it("appends completed lines without rebuilding long transcript layout; scrolling and follow remain stable", () => {
+    withTempDir((dir) => {
+      const file = createSessionFile(dir, [SESSION_HEADER, ...Array.from({ length: 1000 }, (_, i) => ({
+        type: "message", message: { role: "assistant", content: [{ type: "text", text: `turn-${i}` }] },
+      }))]);
+      const running = agent("Long", file);
+      const render = (offset: number, follow: boolean) => testApi.renderSubagentDetailViewport(running, 48, 12, offset, follow, theme);
+      const initial = render(0, true);
+      const layout = testApi.transcriptLayouts.get(running.transcriptCache);
+      const oldLines = layout.lines;
+      const oldFirst = layout.lines[0];
+      assert.ok(initial.lines.join(" ").includes("turn-999"));
+      assert.ok(!initial.lines.join(" ").includes("turn-0"));
+      const scrolled = render(0, false);
+      appendFileSync(file, '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"new turn"}]}}\n');
+      const stillScrolled = render(scrolled.offset, false);
+      assert.equal(stillScrolled.offset, scrolled.offset);
+      assert.equal(testApi.transcriptLayouts.get(running.transcriptCache).lines, oldLines);
+      assert.equal(oldLines[0], oldFirst);
+      assert.ok(render(0, true).lines.join(" ").includes("new turn"));
+      assert.equal(running.transcriptCache.blocks.length, 1001);
+    });
+  });
+  it("renders persisted reasoning and streaming output in the modal", () => {
+    withTempDir((dir) => {
+      const sessionFile = createSessionFile(dir, [SESSION_HEADER, ASSISTANT_MSG_2, TOOL_RESULT]);
+      const recorder = createLiveTranscriptRecorder(sessionFile);
+      recorder.update({ role: "assistant", content: [{ type: "text", text: "Writing the next step" }] });
+      const now = Date.now();
+      const theme = {
+        fg(_color: string, text: string) { return text; },
+        bg(_color: string, text: string) { return text; },
+        bold(text: string) { return text; },
+      };
+      try {
+        const lines = (subagentsModule as any).__test__.renderSubagentDetailLines({
+          id: "inspect-stream", name: "Scout", agent: "scout", task: "Investigate",
+          runtime: { kind: "headless", process: {} }, startTime: now,
+          sessionFile, interactive: false,
+          statusState: createStatusState({ source: "pi", startTimeMs: now }),
+        }, 64, theme);
+        const rendered = lines.join("\n");
+        assert.match(rendered, /Reasoning +\n  Let me think\.\.\./);
+        assert.match(rendered, /Assistant +\n  Updated plan with details\./);
+        assert.match(rendered, /Tool result · bash +\n  output here/);
+        assert.match(rendered, /Assistant · live +\n  Writing the next step/);
+        assert.ok(lines.every((line: string) => visibleWidth(line) <= 64));
+      } finally {
+        recorder.stop();
+      }
+    });
+  });
+
+  it("shows completed reasoning, assistant text, tool calls and tool output in order", () => {
+    withTempDir((dir) => {
+      const session = createSessionFile(dir, [
+        SESSION_HEADER,
+        ASSISTANT_MSG_2,
+        { type: "message", message: { role: "assistant", content: [
+          { type: "toolCall", name: "bash", arguments: { command: "pwd" } },
+        ] } },
+        TOOL_RESULT,
+      ]);
+      const cache = { blocks: [] as Array<{ label: string; text: string }> };
+      assert.deepEqual(readTranscript(session, cache), [
+        { label: "Reasoning", text: "Let me think..." },
+        { label: "Assistant", text: "Updated plan with details." },
+        { label: "Tool call · bash", text: '{\n  "command": "pwd"\n}' },
+        { label: "Tool result · bash", text: "output here" },
+      ]);
+      writeFileSync(session, `${readFileSync(session, "utf8")}{"type":"message","message":`);
+      assert.equal(readTranscript(session, cache).length, 4, "partial writes must be ignored");
+      appendFileSync(session, '{"role":"user","content":"after partial write"}}\n');
+      assert.deepEqual(readTranscript(session, cache).at(-1), { label: "User", text: "after partial write" });
+      assert.equal(readTranscript(session, cache).length, 5, "refresh must not duplicate completed lines");
+    });
+  });
+
+  it("replaces a live streaming snapshot and clears it when the message completes", () => {
+    withTempDir((dir) => {
+      const session = join(dir, "stream.jsonl");
+      const recorder = createLiveTranscriptRecorder(session);
+      recorder.start();
+      recorder.update({ role: "assistant", content: [{ type: "thinking", thinking: "first thought" }] });
+      assert.deepEqual(readLiveTranscript(session), [{ label: "Reasoning", text: "first thought" }]);
+      recorder.update({ role: "assistant", content: [
+        { type: "thinking", thinking: "first thought" }, { type: "text", text: "answer" },
+      ] });
+      recorder.end();
+      assert.equal(existsSync(liveTranscriptPath(session)), false);
+      assert.deepEqual(readLiveTranscript(session), []);
+    });
+  });
+});
+
 describe("session.ts", () => {
   let dir: string;
 
@@ -325,6 +523,7 @@ describe("session.ts", () => {
 
   describe("subagent loadout snapshot", () => {
     const sample: SubagentLoadout = {
+      version: SUBAGENT_LOADOUT_VERSION,
       agent: "worker",
       toolAllowlist: "read,write,edit,safe_bash,web_search,subagent,ask_question",
       model: "openrouter/z-ai/glm-5.2",
@@ -359,25 +558,53 @@ describe("session.ts", () => {
       writeFileSync(sf + ".loadout.json", "not json{", "utf8");
       assert.equal(readSubagentLoadout(sf), null);
     });
+
+    it("rejects incomplete, unsupported, and malformed loadouts", () => {
+      const invalid = [
+        { ...sample, version: 2 },
+        { ...sample, toolAllowlist: " " },
+        { ...sample, agent: null },
+        { ...sample, spawnable: ["valid", "../invalid"] },
+        { ...sample, unexpected: true },
+      ];
+
+      for (const [index, loadout] of invalid.entries()) {
+        const sf = join(dir, `invalid-loadout-${index}.jsonl`);
+        writeFileSync(loadoutSidecarPath(sf), JSON.stringify(loadout));
+        assert.equal(readSubagentLoadout(sf), null);
+      }
+    });
   });
 
   describe("subagent name registry", () => {
     it("registers and resolves a name to its session file", () => {
       const adir = join(dir, "art-1");
-      registerName(adir, "worker", { sessionFile: "/s/worker.jsonl", sessionId: "id-worker" });
+      registerName(adir, "worker", {
+        sessionFile: "/s/worker.jsonl",
+        sessionId: "id-worker",
+        agent: "worker",
+        cwd: "/work",
+        agentDir: "/config",
+      });
       const entry = resolveNameInRegistry(adir, "worker");
-      assert.deepEqual(entry, { sessionFile: "/s/worker.jsonl", sessionId: "id-worker" });
+      assert.deepEqual(entry, {
+        sessionFile: "/s/worker.jsonl",
+        sessionId: "id-worker",
+        agent: "worker",
+        cwd: "/work",
+        agentDir: "/config",
+      });
       assert.ok(existsSync(nameRegistryPath(adir)));
     });
 
     it("accumulates multiple names and overwrites on re-register", () => {
       const adir = join(dir, "art-2");
-      registerName(adir, "scout", { sessionFile: "/s/scout.jsonl", sessionId: "id-scout" });
-      registerName(adir, "scout-2", { sessionFile: "/s/scout2.jsonl", sessionId: "id-scout2" });
+      registerName(adir, "scout", { sessionFile: "/s/scout.jsonl", sessionId: "id-scout", agent: "scout", cwd: "/work", agentDir: "/config" });
+      registerName(adir, "scout-2", { sessionFile: "/s/scout2.jsonl", sessionId: "id-scout2", agent: "scout", cwd: "/work", agentDir: "/config" });
       const reg = readNameRegistry(adir);
       assert.deepEqual(Object.keys(reg).sort(), ["scout", "scout-2"]);
       // Overwrite scout with a new session file.
-      registerName(adir, "scout", { sessionFile: "/s/scout-new.jsonl", sessionId: "id-scout-new" });
+      registerName(adir, "scout", { sessionFile: "/s/scout-new.jsonl", sessionId: "id-scout-new", agent: "scout", cwd: "/work", agentDir: "/config" });
       assert.equal(resolveNameInRegistry(adir, "scout")!.sessionFile, "/s/scout-new.jsonl");
     });
 
@@ -388,6 +615,13 @@ describe("session.ts", () => {
       mkdirSync(adir, { recursive: true });
       writeFileSync(nameRegistryPath(adir), "not json{", "utf8");
       assert.deepEqual(readNameRegistry(adir), {});
+    });
+
+    it("refuses prototype-like registry names even with surrounding whitespace", () => {
+      const adir = join(dir, "art-reserved-name");
+      registerName(adir, "__proto__", { sessionFile: "/s/bad.jsonl", sessionId: "bad" });
+      registerName(adir, " __proto__ ", { sessionFile: "/s/bad2.jsonl", sessionId: "bad2" });
+      assert.deepEqual(Object.keys(readNameRegistry(adir)), []);
     });
   });
 
@@ -1172,6 +1406,31 @@ describe("subagent discovery", () => {
     );
   });
 
+  it("selects headless RPC for autonomous profiles and tmux only for interactive profiles", () => {
+    assert.equal(
+      testApi.resolveSubagentBackend({ name: "A", task: "T" }, { autoExit: true }),
+      "headless",
+    );
+    assert.equal(
+      testApi.resolveSubagentBackend(
+        { name: "A", task: "T" },
+        { autoExit: true, interactive: true },
+      ),
+      "tmux",
+    );
+    assert.equal(
+      testApi.resolveSubagentBackend({ name: "A", task: "T" }, { autoExit: false }),
+      "tmux",
+    );
+    assert.equal(
+      testApi.resolveSubagentBackend(
+        { name: "A", task: "T" },
+        { autoExit: false, interactive: false },
+      ),
+      "headless",
+    );
+  });
+
   it("bundled scout/researcher/worker all resolve as non-interactive (auto-exit)", () => {
     for (const name of ["scout", "researcher", "worker"]) {
       const defs = testApi.loadAgentDefaults(name);
@@ -1215,7 +1474,7 @@ describe("subagent discovery", () => {
     assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
   });
 
-  it("ignores invalid session-mode values", async () => {
+  it("rejects invalid behavior-critical frontmatter values", async () => {
     await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
       writeAgentFile(
         projectAgentsDir,
@@ -1226,10 +1485,14 @@ describe("subagent discovery", () => {
           "session-mode: sideways",
         ].join("\n"),
       );
+      writeAgentFile(projectAgentsDir, "invalid-bool-agent", "name: invalid-bool-agent\nauto-exit: ture");
+      writeAgentFile(projectAgentsDir, "invalid-prompt-agent", "name: invalid-prompt-agent\nsystem-prompt: merge");
+      writeAgentFile(projectAgentsDir, "invalid-cli-agent", "name: invalid-cli-agent\ncli: unknown");
 
-      const loaded = testApi.loadAgentDefaults("invalid-mode-test-agent");
-      assert.ok(loaded, "expected agent to load");
-      assert.equal(loaded.sessionMode, undefined);
+      assert.equal(testApi.loadAgentDefaults("invalid-mode-test-agent"), null);
+      assert.equal(testApi.loadAgentDefaults("invalid-bool-agent"), null);
+      assert.equal(testApi.loadAgentDefaults("invalid-prompt-agent"), null);
+      assert.equal(testApi.loadAgentDefaults("invalid-cli-agent"), null);
     });
   });
 
@@ -1272,6 +1535,23 @@ describe("subagent discovery", () => {
     );
   });
 
+  it("keeps a fork profile's identity in the delivered task", () => {
+    const task = testApi.buildSubagentTask(
+      "Inspect the current changes.",
+      { body: "You are a focused reviewer.", sessionMode: "fork", autoExit: true },
+      true,
+    );
+    assert.match(task, /You are a focused reviewer/);
+    assert.match(task, /Inspect the current changes/);
+
+    const systemPromptTask = testApi.buildSubagentTask(
+      "Inspect the current changes.",
+      { body: "System identity", systemPromptMode: "replace", sessionMode: "fork" },
+      true,
+    );
+    assert.equal(systemPromptTask, "Inspect the current changes.");
+  });
+
   it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist("read,bash,web_search"),
@@ -1279,9 +1559,33 @@ describe("subagent discovery", () => {
     );
   });
 
-  it("buildSubagentToolAllowlist returns null without an explicit tool restriction", () => {
-    assert.equal(testApi.buildSubagentToolAllowlist(undefined), null);
-    assert.equal(testApi.buildSubagentToolAllowlist(""), null);
+  it("buildSubagentToolAllowlist fails closed without an explicit tool restriction", () => {
+    assert.equal(testApi.buildSubagentToolAllowlist(undefined), "ask_question");
+    assert.equal(testApi.buildSubagentToolAllowlist(""), "ask_question");
+  });
+
+  it("validates persisted permissions against the current agent policy", () => {
+    const loadout: SubagentLoadout = {
+      version: SUBAGENT_LOADOUT_VERSION,
+      agent: "worker",
+      toolAllowlist: "read,subagent,subagent_message,subagents_list,ask_question",
+      model: null,
+      thinking: null,
+      systemPromptMode: null,
+      identity: null,
+      spawnable: ["scout"],
+      autoExit: true,
+      cwd: "/work",
+      agentDir: "/config",
+    };
+    const policy = { tools: "read", subagentAgents: ["scout"] };
+    assert.equal(testApi.loadoutMatchesAgentPolicy(loadout, policy), true);
+    assert.equal(
+      testApi.loadoutMatchesAgentPolicy({ ...loadout, toolAllowlist: `${loadout.toolAllowlist},bash` }, policy),
+      false,
+    );
+    assert.equal(testApi.loadoutMatchesAgentPolicy({ ...loadout, spawnable: ["scout", "researcher"] }, policy), false);
+    assert.equal(testApi.loadoutMatchesAgentPolicy(loadout, null), false);
   });
 
   it("applySandboxToParts replays model, identity, and default-deny tool restriction", () => {
@@ -1290,6 +1594,7 @@ describe("subagent discovery", () => {
       testApi.applySandboxToParts(
         parts,
         {
+          version: SUBAGENT_LOADOUT_VERSION,
           agent: "worker",
           toolAllowlist: "read,write,safe_bash",
           model: "openrouter/z-ai/glm-5.2",
@@ -1298,8 +1603,8 @@ describe("subagent discovery", () => {
           identity: "You are a worker.",
           spawnable: ["scout"],
           autoExit: true,
-          cwd: null,
-          agentDir: null,
+          cwd: "/work",
+          agentDir: "/config",
         },
         { artifactDir: d, name: "worker" },
       );
@@ -1321,26 +1626,89 @@ describe("subagent discovery", () => {
     });
   });
 
-  it("applySandboxToParts omits restriction flags when the loadout was unrestricted", () => {
+  it("applySandboxToParts always applies a default-deny restriction", () => {
     withTempDir((d) => {
       const parts: string[] = [];
       testApi.applySandboxToParts(
         parts,
         {
-          agent: null,
-          toolAllowlist: null,
+          version: SUBAGENT_LOADOUT_VERSION,
+          agent: "minimal",
+          toolAllowlist: "ask_question",
           model: null,
           thinking: null,
           systemPromptMode: null,
           identity: null,
           spawnable: null,
           autoExit: false,
-          cwd: null,
-          agentDir: null,
+          cwd: "/work",
+          agentDir: "/config",
         },
-        { artifactDir: d, name: "fork" },
+        { artifactDir: d, name: "minimal" },
       );
-      assert.deepEqual(parts, []);
+      assert.deepEqual(parts, ["--no-extensions", "--tools", "'ask_question'"]);
+    });
+  });
+
+  it("applySandboxToParts emits raw argv values for the headless backend", () => {
+    withTempDir((d) => {
+      const parts: string[] = [];
+      testApi.applySandboxToParts(
+        parts,
+        {
+          version: SUBAGENT_LOADOUT_VERSION,
+          agent: "minimal",
+          toolAllowlist: "read,ask_question",
+          model: "provider/model",
+          thinking: "high",
+          systemPromptMode: null,
+          identity: null,
+          spawnable: null,
+          autoExit: true,
+          cwd: "/work",
+          agentDir: "/config",
+        },
+        { artifactDir: d, name: "minimal" },
+        (value: string) => value,
+      );
+      assert.deepEqual(parts, [
+        "--model",
+        "provider/model:high",
+        "--no-extensions",
+        "--tools",
+        "read,ask_question",
+      ]);
+    });
+  });
+
+  it("loads an agent by its discovered frontmatter name rather than its filename", async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        "profile-file",
+        ["name: canonical-agent", "model: anthropic/aliased", "tools: read"].join("\n"),
+        "Aliased profile body.",
+      );
+
+      const loaded = testApi.loadAgentDefaults("canonical-agent");
+      assert.equal(loaded?.model, "anthropic/aliased");
+      assert.equal(loaded?.body, "Aliased profile body.");
+      assert.equal(testApi.loadAgentDefaults("profile-file"), null);
+    });
+  });
+
+  it("ignores definitions with invalid names or nested-agent identifiers", async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(projectAgentsDir, "bad-name", "name: ../worker\ntools: read");
+      writeAgentFile(
+        projectAgentsDir,
+        "bad-children",
+        "name: valid-parent\ntools: read\nsubagent_agents: scout, ../worker",
+      );
+
+      const names = testApi.discoverAgentDefinitions().map((agent: any) => agent.name);
+      assert.equal(names.includes("../worker"), false);
+      assert.equal(names.includes("valid-parent"), false);
     });
   });
 
@@ -1647,7 +2015,7 @@ describe("subagent-done.ts", () => {
     // Regression tests for the mid-run reply race: a reply steered in while the
     // asking run is still open fires `input` but NOT `agent_start`, so the flag
     // must be cleared on `input` or the session parks forever.
-    function setupCapturingExtension(sessionFile: string) {
+    function setupCapturingExtension(sessionFile: string, rpcManaged = false) {
       const handlers = new Map<string, Array<(...args: any[]) => void>>();
       const tools: any[] = [];
       const api = {
@@ -1664,11 +2032,14 @@ describe("subagent-done.ts", () => {
         name: process.env.PI_SUBAGENT_NAME,
         agent: process.env.PI_SUBAGENT_AGENT,
         autoExit: process.env.PI_SUBAGENT_AUTO_EXIT,
+        rpc: process.env.PI_SUBAGENT_RPC,
       };
       process.env.PI_SUBAGENT_SESSION = sessionFile;
       process.env.PI_SUBAGENT_NAME = "scout-2";
       process.env.PI_SUBAGENT_AGENT = "scout";
       process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+      if (rpcManaged) process.env.PI_SUBAGENT_RPC = "1";
+      else delete process.env.PI_SUBAGENT_RPC;
       subagentDoneExtension(api);
       const emit = (event: string, ...args: any[]) =>
         (handlers.get(event) ?? []).forEach((h) => h(...args));
@@ -1677,6 +2048,7 @@ describe("subagent-done.ts", () => {
         restoreEnvVar("PI_SUBAGENT_NAME", saved.name);
         restoreEnvVar("PI_SUBAGENT_AGENT", saved.agent);
         restoreEnvVar("PI_SUBAGENT_AUTO_EXIT", saved.autoExit);
+        restoreEnvVar("PI_SUBAGENT_RPC", saved.rpc);
       };
       const ask = async () => {
         const tool = tools.find((t) => t.name === "ask_question");
@@ -1738,6 +2110,20 @@ describe("subagent-done.ts", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it("leaves final shutdown to the parent supervisor in RPC mode", () => {
+      const dir = createTestDir();
+      const { emit, restore } = setupCapturingExtension(join(dir, "s.jsonl"), true);
+      try {
+        emit("agent_start");
+        let shutdown = false;
+        emit("agent_end", { messages: [] }, { shutdown() { shutdown = true; } });
+        assert.equal(shutdown, false);
+      } finally {
+        restore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
 
@@ -1787,6 +2173,49 @@ describe("tmux.ts interpretExitSidecar", () => {
     assert.deepEqual(interpretExitSidecar(null), { reason: "done", exitCode: 0 });
   });
 });
+
+describe("tmux.ts pollForExit", () => {
+  it("returns a terminal error when the surface disappears", async () => {
+    const result = await pollForExit("%missing", new AbortController().signal, {
+      interval: 1,
+      readScreen: async () => { throw new Error("pane not found"); },
+    });
+    assert.equal(result.reason, "error");
+    assert.match(result.errorMessage ?? "", /surface disappeared.*pane not found/i);
+  });
+
+  it("returns a terminal error when a retained pane dies without a sentinel", async () => {
+    const result = await pollForExit("%dead", new AbortController().signal, {
+      interval: 1,
+      readScreen: async () => "process exited unexpectedly",
+      isSurfaceDead: () => true,
+    });
+    assert.equal(result.reason, "error");
+    assert.match(result.errorMessage ?? "", /before reporting completion/i);
+  });
+
+  it("preserves an error sidecar until terminal completion is observed", async () => {
+    const dir = createTestDir();
+    try {
+      const sessionFile = join(dir, "sidecar-order.jsonl");
+      writeFileSync(`${sessionFile}.exit`, JSON.stringify({
+        type: "error",
+        errorMessage: "provider overloaded",
+      }));
+      const result = await pollForExit("%done", new AbortController().signal, {
+        interval: 1,
+        sessionFile,
+        readScreen: async () => "__SUBAGENT_DONE_0__",
+      });
+      assert.equal(result.reason, "error");
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.errorMessage, "provider overloaded");
+      assert.equal(existsSync(`${sessionFile}.exit`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 describe("commands", () => {
   it("/subagent emits a spawn tool call for a known agent", () => {
     const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
@@ -1810,6 +2239,161 @@ describe("commands", () => {
     (subagentsModule as any).default(api);
     assert.equal(registeredCommands.find((c) => c.name === "iterate"), undefined);
     assert.equal(registeredCommands.find((c) => c.name === "plan"), undefined);
+  });
+
+  it("/subagent rejects path-like agent names", () => {
+    const { api, registeredCommands, sentUserMessages } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const subagent = registeredCommands.find((command) => command.name === "subagent");
+    const notifications: string[] = [];
+
+    subagent.handler("../worker do it", {
+      ui: { notify(message: string) { notifications.push(message); } },
+    });
+
+    assert.equal(sentUserMessages.length, 0);
+    assert.match(notifications[0], /only contain/i);
+  });
+
+  it("registers the live subagent inspector command and shortcut", async () => {
+    const { api, registeredCommands, registeredShortcuts } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const inspect = registeredCommands.find((command) => command.name === "subagents");
+    assert.ok(inspect, "expected /subagents to be registered");
+    assert.ok(
+      registeredShortcuts.some((shortcut) => shortcut.shortcut === "ctrl+alt+s"),
+      "expected Ctrl+Alt+S to be registered",
+    );
+
+    const notifications: string[] = [];
+    await inspect.handler("", {
+      hasUI: true,
+      ui: { notify(message: string) { notifications.push(message); } },
+    });
+    assert.deepEqual(notifications, ["No subagents are currently running."]);
+  });
+
+  it("opens a height-bounded, scrollable live inspector", async () => {
+    const { api, registeredCommands } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const inspect = registeredCommands.find((command) => command.name === "subagents");
+    const runningMap = (subagentsModule as any).__test__.runningSubagents as Map<string, any>;
+    const startTime = Date.now() - 5_000;
+    runningMap.set("inspect-1", {
+      id: "inspect-1",
+      name: "Inspector target",
+      agent: "worker",
+      task: "A long enough task to populate the inspector with useful live details.",
+      runtime: { kind: "headless", process: {} },
+      startTime,
+      sessionFile: "/tmp/inspect.jsonl",
+      interactive: false,
+      statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
+    });
+
+    const theme = {
+      fg(_color: string, text: string) { return text; },
+      bg(_color: string, text: string) { return text; },
+      bold(text: string) { return text; },
+    };
+    let firstPage = "";
+    let secondPage = "";
+    try {
+      await inspect.handler("Inspector target", {
+        hasUI: true,
+        ui: {
+          notify() {},
+          custom(factory: Function, options: any) {
+            return new Promise<void>((resolve) => {
+              const tui = { terminal: { rows: 12 }, requestRender() {} };
+              const component = factory(
+                tui,
+                theme,
+                {},
+                resolve,
+              );
+              assert.equal(options.overlayOptions.maxHeight, "100%");
+              const firstLines = component.render(64);
+              assert.ok(firstLines.length <= 10);
+              firstPage = firstLines.join("\n");
+              tui.terminal.rows = 7;
+              const resizedLines = component.render(64);
+              assert.ok(resizedLines.length <= 5);
+              assert.match(resizedLines.at(-1), /q close/);
+              tui.terminal.rows = 12;
+              component.handleInput("\x1b[6~");
+              component.handleInput("\x1b[6~");
+              secondPage = component.render(64).join("\n");
+              component.handleInput("q");
+              component.dispose();
+            });
+          },
+        },
+      });
+    } finally {
+      runningMap.delete("inspect-1");
+    }
+
+    assert.match(firstPage, /Subagent inspector/);
+    assert.notEqual(firstPage, secondPage);
+    assert.match(secondPage, /Session: \/tmp\/inspect\.jsonl/);
+    assert.match(secondPage, /q close/);
+  });
+
+  it("switches between running subagents in the inspector, including after one finishes", async () => {
+    const { api, registeredCommands } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const inspect = registeredCommands.find((command) => command.name === "subagents");
+    const runningMap = (subagentsModule as any).__test__.runningSubagents as Map<string, any>;
+    const startTime = Date.now();
+    for (const name of ["Alpha", "Beta", "Gamma"]) {
+      runningMap.set(`switch-${name}`, {
+        id: `switch-${name}`, name, task: `Task for ${name}`,
+        runtime: { kind: "headless", process: {} }, startTime,
+        sessionFile: `/tmp/switch-${name}.jsonl`, interactive: false,
+        statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
+      });
+    }
+    const theme = {
+      fg(_color: string, text: string) { return text; },
+      bg(_color: string, text: string) { return text; },
+      bold(text: string) { return text; },
+    };
+    try {
+      await inspect.handler("Alpha", {
+        hasUI: true,
+        ui: {
+          notify() {},
+          custom(factory: Function) {
+            return new Promise<void>((resolve) => {
+              const component = factory(
+                { terminal: { rows: 14 }, requestRender() {} }, theme, {}, resolve,
+              );
+              const page = () => component.render(80).join("\n");
+              assert.match(page(), /Name: Alpha/);
+              assert.match(page(), /Alpha \(1\/3\)/);
+              assert.match(page(), /←\/→ agent/);
+              component.handleInput("\x1b[C");
+              assert.match(page(), /Name: Beta/);
+              component.handleInput("\x1b[C");
+              assert.match(page(), /Name: Gamma/);
+              component.handleInput("\x1b[C");
+              assert.match(page(), /Name: Alpha/);
+              component.handleInput("\x1b[D");
+              assert.match(page(), /Name: Gamma/);
+              runningMap.delete("switch-Gamma");
+              component.handleInput("\x1b[D");
+              assert.match(page(), /Name: Beta/);
+              assert.match(page(), /Beta \(2\/2\)/);
+              component.handleInput("q");
+              component.dispose();
+            });
+          },
+        },
+      });
+    } finally {
+      for (const name of ["Alpha", "Beta", "Gamma"]) runningMap.delete(`switch-${name}`);
+    }
   });
 });
 
@@ -1848,6 +2432,58 @@ describe("tool registration", () => {
     });
     assert.equal(result.details?.error, "unknown agent");
     assert.match(result.content[0].text, /not a known agent/i);
+  });
+
+  it("rejects malformed agent and display names before checking tmux", async () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const subagentTool = registeredTools.find((tool) => tool.name === "subagent");
+
+    const invalidAgent = await subagentTool.execute("call-1", {
+      agent: "__proto__",
+      task: "do it",
+    });
+    assert.equal(invalidAgent.details?.error, "invalid agent name");
+
+    const invalidDisplay = await subagentTool.execute("call-2", {
+      agent: "worker",
+      name: " __proto__ ",
+      task: "do it",
+    });
+    assert.equal(invalidDisplay.details?.error, "invalid display name");
+
+    const multilineDisplay = await subagentTool.execute("call-3", {
+      agent: "worker",
+      name: "safe\ntouch /tmp/injected",
+      task: "do it",
+    });
+    assert.equal(multilineDisplay.details?.error, "invalid display name");
+
+    const terminalControlDisplay = await subagentTool.execute("call-4", {
+      agent: "worker",
+      name: "safe\u001b]52;c;clipboard\u0007",
+      task: "do it",
+    });
+    assert.equal(terminalControlDisplay.details?.error, "invalid display name");
+  });
+
+  it("rejects Claude-backed profiles that cannot enforce the tool sandbox", async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(projectAgentsDir, "claude-agent", "name: claude-agent\ncli: claude\ntools: read");
+      const { api, registeredTools } = createMockExtensionApi();
+      (subagentsModule as any).default(api);
+      const subagentTool = registeredTools.find((tool) => tool.name === "subagent");
+
+      const result = await subagentTool.execute("call-1", {
+        agent: "claude-agent",
+        task: "do it",
+      });
+      assert.equal(result.details?.error, "unsupported sandbox backend");
+
+      const listTool = registeredTools.find((tool) => tool.name === "subagents_list");
+      const listed = await listTool.execute();
+      assert.equal(listed.details.agents.some((agent: any) => agent.name === "claude-agent"), false);
+    });
   });
 
   it("exposes a debloated schema: agent+task required, name/model/cwd optional, no override knobs", () => {
@@ -1919,6 +2555,15 @@ describe("tool registration", () => {
     );
     assert.equal(props.sessionId, undefined, "sessionId should be removed");
     assert.equal(props.autoExit, undefined, "autoExit knob should be removed");
+  });
+
+  it("rejects an empty subagent message before checking tmux", async () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const messageTool = registeredTools.find((tool) => tool.name === "subagent_message");
+
+    const result = await messageTool.execute("call-1", { name: "worker", message: " \n\t " });
+    assert.match(result.details?.error, /`message` is required/);
   });
 
   it("no longer registers subagent_interrupt or subagent_resume", () => {
@@ -2108,6 +2753,7 @@ describe("subagent interruption", () => {
       id: "a1",
       name: "Worker",
       task: "",
+      runtime: { kind: "tmux", surface: "pane-1" },
       surface: "pane-1",
       startTime: 0,
       sessionFile: "worker.jsonl",
@@ -2214,6 +2860,33 @@ describe("subagent interruption", () => {
     }
   });
 
+  it("suffixes an explicit display name reserved by a parallel spawn", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const reserved = testApi.reservedNames as Set<string>;
+    reserved.clear();
+    try {
+      const first = testApi.uniqueRunningName("reviewer");
+      reserved.add(first);
+      assert.equal(first, "reviewer");
+      assert.equal(testApi.uniqueRunningName("reviewer"), "reviewer-2");
+    } finally {
+      reserved.clear();
+    }
+  });
+
+  it("reserves canonical session paths to prevent concurrent resumes", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const reserved = testApi.reservedSessionPaths as Set<string>;
+    reserved.clear();
+    try {
+      const first = testApi.reserveSessionPath("./sessions/../sessions/worker.jsonl");
+      assert.ok(first?.endsWith("/sessions/worker.jsonl"));
+      assert.equal(testApi.reserveSessionPath("./sessions/worker.jsonl"), null);
+    } finally {
+      reserved.clear();
+    }
+  });
+
   it("steers a running subagent by typing into its pane (newlines flattened)", () => {
     const testApi = (subagentsModule as any).__test__;
     let sentSurface = "";
@@ -2239,6 +2912,55 @@ describe("subagent interruption", () => {
     });
 
     assert.match(result.error, /Failed to deliver message/);
+  });
+
+  it("uses RPC steering for a running headless subagent", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const sent: string[] = [];
+    const running = makeRunning({
+      surface: undefined,
+      runtime: {
+        kind: "headless",
+        process: {
+          async send(message: string) {
+            sent.push(message);
+          },
+        },
+      },
+    });
+
+    const result = await testApi.messageRunningSubagent(running, "do this\nthen that");
+    assert.deepEqual(sent, ["do this\nthen that"]);
+    assert.equal(result.details.transport, "rpc");
+    assert.equal(result.details.status, "steered");
+  });
+
+  it("delivers completion exactly once, retries throws, and suppresses cancellation", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const running = makeRunning();
+    const result = {
+      name: "Worker",
+      task: "work",
+      summary: "complete",
+      exitCode: 0,
+      elapsed: 1,
+    };
+    let deliveries = 0;
+    assert.equal(testApi.deliverResultOnce(running, result, () => { deliveries += 1; }), true);
+    assert.equal(testApi.deliverResultOnce(running, result, () => { deliveries += 1; }), false);
+    assert.equal(deliveries, 1);
+
+    const retryable = makeRunning();
+    assert.throws(() => testApi.deliverResultOnce(retryable, result, () => {
+      throw new Error("delivery failed");
+    }), /delivery failed/);
+    assert.equal(testApi.deliverResultOnce(retryable, result, () => { deliveries += 1; }), true);
+    assert.equal(
+      testApi.deliverResultOnce(makeRunning(), { ...result, error: "cancelled" }, () => {
+        deliveries += 1;
+      }),
+      false,
+    );
   });
 
   it("delivers a steer message and forces local status waiting", () => {
@@ -2489,8 +3211,39 @@ describe("subagent startup delay", () => {
       else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original;
     }
   });
+
+  it("aborts the shell-ready delay during shutdown or reload", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const original = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS;
+    process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = "10000";
+    try {
+      const controller = new AbortController();
+      const waiting = testApi.waitForShellReady(controller.signal);
+      controller.abort();
+      await assert.rejects(waiting, /launch aborted/);
+    } finally {
+      if (original == null) delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS;
+      else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original;
+    }
+  });
 });
 describe("subagents widget rendering", () => {
+  it("shows the live-detail shortcut in the section header", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const startTime = Date.now();
+    const [header] = testApi.renderSubagentWidgetLines([
+      {
+        id: "a1",
+        name: "Scout",
+        task: "inspect auth",
+        startTime,
+        sessionFile: "sess1",
+        statusState: createStatusState({ source: "pi", startTimeMs: startTime }),
+      },
+    ], 90);
+    assert.match(header, /Ctrl\+Alt\+S details/);
+  });
+
   it("keeps every rendered line within a very narrow width", () => {
     const testApi = (subagentsModule as any).__test__;
     assert.ok(testApi, "expected subagents test helpers to be exported");
@@ -2574,6 +3327,75 @@ describe("subagents widget rendering", () => {
         );
       }
     }
+  });
+
+  it("renders a bounded live detail view with current tool activity", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const now = 1_000_000;
+    const theme = {
+      fg(_color: string, text: string) { return text; },
+      bg(_color: string, text: string) { return text; },
+      bold(text: string) { return text; },
+    };
+
+    withMockedNow(now, () => {
+      const lines = testApi.renderSubagentDetailLines({
+        id: "a1",
+        name: "Auth scout",
+        agent: "scout",
+        task: "Map the authentication flow and report risky boundaries.",
+        runtime: { kind: "headless", process: {} },
+        startTime: now - 42_000,
+        sessionFile: "/tmp/scout.jsonl",
+        interactive: false,
+        activity: {
+          version: 1,
+          runningChildId: "a1",
+          createdAt: now - 42_000,
+          updatedAt: now - 1_000,
+          sequence: 4,
+          latestEvent: "tool_execution_start",
+          phase: "active",
+          agentActive: true,
+          turnActive: true,
+          providerActive: false,
+          toolActive: true,
+          activeScope: "tool",
+          activeSince: now - 3_000,
+          toolName: "grep",
+          turnIndex: 1,
+        },
+        loadout: {
+          model: "test/model",
+          thinking: "medium",
+          cwd: "/workspace",
+        },
+        statusState: observeStatus(
+          createStatusState({ source: "pi", startTimeMs: now - 42_000 }),
+          {
+            snapshot: "present",
+            updatedAt: now - 1_000,
+            sequence: 4,
+            phase: "active",
+            active: true,
+            activeScope: "tool",
+            activeSince: now - 3_000,
+            latestEvent: "tool_execution_start",
+            activityLabel: "grep",
+          },
+          now,
+        ),
+      }, 64, theme);
+
+      assert.ok(lines.every((line: string) => visibleWidth(line) <= 64));
+      const rendered = lines.join("\n");
+      assert.match(rendered, /Subagent inspector/);
+      assert.match(rendered, /Status: active - grep - 3s/);
+      assert.match(rendered, /Tool: grep/);
+      assert.match(rendered, /Latest event: tool_execution_start/);
+      assert.match(rendered, /Map the authentication flow/);
+      assert.match(rendered, /Session: \/tmp\/scout\.jsonl/);
+    });
   });
 });
 

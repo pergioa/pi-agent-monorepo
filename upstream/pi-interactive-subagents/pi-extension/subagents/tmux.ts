@@ -149,6 +149,17 @@ export function createSurfaceSplit(
     throw new Error(`Unexpected tmux split-window output: ${pane}`);
   }
 
+  // Keep the completed pane available long enough for the watcher to capture
+  // its sentinel. The watcher remains responsible for removing it.
+  try {
+    execFileSync("tmux", ["set-option", "-p", "-t", pane, "remain-on-exit", "on"], {
+      encoding: "utf8",
+    });
+  } catch (error) {
+    try { execFileSync("tmux", ["kill-pane", "-t", pane], { encoding: "utf8" }); } catch {}
+    throw error;
+  }
+
   rebalanceSurfaces(pane);
   return pane;
 }
@@ -162,6 +173,27 @@ export function sendCommand(surface: string, command: string): void {
   requireTmux();
   execFileSync("tmux", ["send-keys", "-t", surface, "-l", command], { encoding: "utf8" });
   execFileSync("tmux", ["send-keys", "-t", surface, "Enter"], { encoding: "utf8" });
+}
+
+export function isSurfaceDead(surface: string): boolean {
+  requireTmux();
+  return execFileSync(
+    "tmux",
+    ["display-message", "-p", "-t", surface, "#{pane_dead}"],
+    { encoding: "utf8" },
+  ).trim() === "1";
+}
+
+/**
+ * Send input only while the pane is alive. Launch scripts replace the pane's
+ * interactive shell via `exec`, so a late steer can never become a shell
+ * command even if the process exits after this check.
+ */
+export function sendInput(surface: string, input: string): void {
+  if (isSurfaceDead(surface)) {
+    throw new Error("subagent process is no longer active");
+  }
+  sendCommand(surface, input);
 }
 
 /**
@@ -178,7 +210,7 @@ export function sendCommand(surface: string, command: string): void {
 export function sendLongCommand(
   surface: string,
   command: string,
-  options?: { scriptPath?: string; scriptPreamble?: string },
+  options?: { scriptPath?: string; scriptComments?: string[] },
 ): string {
   const scriptPath =
     options?.scriptPath ??
@@ -190,15 +222,19 @@ export function sendLongCommand(
   mkdirSync(dirname(scriptPath), { recursive: true });
 
   const scriptParts = ["#!/bin/bash"];
-  if (options?.scriptPreamble) {
-    scriptParts.push(options.scriptPreamble.trimEnd());
+  if (options?.scriptComments) {
+    for (const comment of options.scriptComments) {
+      scriptParts.push(`# ${comment.replace(/[\r\n\0]/g, " ")}`);
+    }
   }
   scriptParts.push(command);
 
   writeFileSync(scriptPath, scriptParts.join("\n") + "\n", {
     mode: 0o755,
   });
-  sendCommand(surface, `bash ${shellEscape(scriptPath)}`);
+  // Replace the interactive pane shell. When the script exits there is no
+  // prompt that could accidentally execute a late steering message.
+  sendCommand(surface, `exec bash ${shellEscape(scriptPath)}`);
   return scriptPath;
 }
 
@@ -209,7 +245,7 @@ export function readScreen(surface: string, lines = 50): string {
   requireTmux();
   return execFileSync(
     "tmux",
-    ["capture-pane", "-p", "-t", surface, "-S", `-${Math.max(1, lines)}`],
+    ["capture-pane", "-p", "-J", "-t", surface, "-S", `-${Math.max(1, lines)}`],
     {
       encoding: "utf8",
     },
@@ -223,7 +259,7 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
   requireTmux();
   const { stdout } = await execFileAsync(
     "tmux",
-    ["capture-pane", "-p", "-t", surface, "-S", `-${Math.max(1, lines)}`],
+    ["capture-pane", "-p", "-J", "-t", surface, "-S", `-${Math.max(1, lines)}`],
     { encoding: "utf8" },
   );
   return stdout;
@@ -283,10 +319,14 @@ export async function pollForExit(
     interval: number;
     sessionFile?: string;
     sentinelFile?: string;
+    sidecarGraceMs?: number;
     onTick?: (elapsed: number) => void;
+    readScreen?: (surface: string, lines?: number) => Promise<string>;
+    isSurfaceDead?: (surface: string) => boolean;
   },
 ): Promise<PollResult> {
   const start = Date.now();
+  let pendingSidecar: { result: PollResult; detectedAt: number } | null = null;
 
   for (;;) {
     if (signal.aborted) {
@@ -300,7 +340,7 @@ export async function pollForExit(
         if (existsSync(exitFile)) {
           const data = JSON.parse(readFileSync(exitFile, "utf-8"));
           rmSync(exitFile, { force: true });
-          return interpretExitSidecar(data);
+          pendingSidecar = { result: interpretExitSidecar(data), detectedAt: Date.now() };
         }
       } catch {}
     }
@@ -316,12 +356,22 @@ export async function pollForExit(
 
     // Slow path: read terminal screen for sentinel (crash detection)
     try {
-      const screen = await readScreenAsync(surface, 5);
+      const screen = await (options.readScreen ?? readScreenAsync)(surface, 5);
       const match = screen.match(/__SUBAGENT_DONE_(\d+)__/);
       if (match) {
-        return { reason: "sentinel", exitCode: parseInt(match[1], 10) };
+        return pendingSidecar?.result ?? {
+          reason: "sentinel",
+          exitCode: parseInt(match[1], 10),
+        };
       }
-    } catch {
+      if ((options.isSurfaceDead ?? isSurfaceDead)(surface)) {
+        return pendingSidecar?.result ?? {
+          reason: "error",
+          exitCode: 1,
+          errorMessage: "Subagent process exited before reporting completion.",
+        };
+      }
+    } catch (error: any) {
       // Surface may have been destroyed — check if .exit file appeared in the meantime
       if (options.sessionFile) {
         try {
@@ -333,6 +383,18 @@ export async function pollForExit(
           }
         } catch {}
       }
+      return pendingSidecar?.result ?? {
+        reason: "error",
+        exitCode: 1,
+        errorMessage: `Subagent surface disappeared before completion: ${error?.message ?? String(error)}`,
+      };
+    }
+
+    if (
+      pendingSidecar &&
+      Date.now() - pendingSidecar.detectedAt >= (options.sidecarGraceMs ?? 10_000)
+    ) {
+      return pendingSidecar.result;
     }
 
     const elapsed = Math.floor((Date.now() - start) / 1000);

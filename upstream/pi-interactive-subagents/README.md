@@ -1,12 +1,14 @@
 # pi-interactive-subagents
 
-Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux panes. Spawn a sub-agent, keep working in the main session, and get the result steered back when it finishes. Fully non-blocking.
+Async subagents for [pi](https://github.com/badlogic/pi-mono). Autonomous agents run as managed headless RPC processes; explicitly interactive agents retain a tmux-pane fallback. Spawn a sub-agent, keep working in the main session, and get the result steered back when it finishes. Fully non-blocking.
 
-**tmux-only fork.** See [Acknowledgements](#acknowledgements) for the upstream project, which also supports cmux, zellij, and WezTerm.
+**Headless-first fork.** tmux is optional and is used only for interactive profiles. See [Acknowledgements](#acknowledgements) for the upstream project, which also supports cmux, zellij, and WezTerm.
 
 ## How it works
 
-`subagent()` returns immediately. The sub-agent runs in its own tmux pane — a right split off the parent pi pane, so pane creation never steals keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
+`subagent()` returns after startup. Autonomous profiles run as direct child processes in Pi RPC mode, with piped stdio and structured lifecycle events. No pane is created, and the parent Pi session does not need to run in tmux. A live widget above the input tracks every running sub-agent. Press `Ctrl+Alt+S` (or run `/subagents [name]`) to open a focused, live-updating activity view for a running sub-agent. When one finishes, its result is steered into the main session as a notification that triggers a new turn.
+
+Profiles resolved as interactive run in a right-side tmux split. That fallback keeps the terminal visible for human-driven sessions; pane creation never steals keyboard focus.
 
 ```
 ╭─ Subagents ──────────────────────────── 2 running ─╮
@@ -17,7 +19,7 @@ Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux p
 
 Spawn several in parallel — they run concurrently and steer results back independently as each finishes.
 
-Panes are kept evenly sized: the extension re-applies an `even-horizontal` layout after every spawn and exit (debounced). The layout is a single constant, `SUBAGENT_TMUX_LAYOUT` in `pi-extension/subagents/tmux.ts` — change it to any named tmux layout (`main-vertical`, `tiled`, …).
+Interactive panes are kept evenly sized: the extension re-applies an `even-horizontal` layout after every spawn and exit (debounced). The layout is a single constant, `SUBAGENT_TMUX_LAYOUT` in `pi-extension/subagents/tmux.ts`.
 
 If your shell startup is slow and launch commands get dropped before the prompt is ready, raise the delay:
 
@@ -29,12 +31,12 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500   # default: 500
 
 | Tool | Description |
 | --- | --- |
-| `subagent` | Spawn a sub-agent in a dedicated tmux pane (async) |
+| `subagent` | Spawn a headless autonomous or tmux-backed interactive sub-agent (async) |
 | `subagent_message` | Message a sub-agent by name — steers it if running, resumes its session if finished |
 | `subagents_list` | List available agent definitions |
 | `ask_question` | *(sub-agent sessions only)* Ask the orchestrator a question and wait for the reply |
 
-There is also a `/subagent <agent> <task>` command for spawning directly.
+There is also a `/subagent <agent> <task>` command for spawning directly and a `/subagents [name]` command for inspecting live activity.
 
 ### Spawning
 
@@ -59,8 +61,9 @@ subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode to
 subagent_message({ name: "scout", message: "Also check the auth middleware" });
 ```
 
-- **Running** — the message is typed into the live pane (newlines flattened) and picked up at the next turn boundary. The call returns immediately; the eventual completion still arrives as a steer message.
-- **Finished** — the session is resumed with the message as the follow-up task, like a fresh spawn: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
+- **Running autonomous session** - the message is sent as an RPC `prompt` with `streamingBehavior: "steer"`. This starts an idle parked session or queues the message at the next boundary when already streaming. The call returns after RPC acceptance; the eventual completion still arrives as a steer message.
+- **Running interactive session** - the message is typed into the live tmux pane (newlines flattened).
+- **Finished** - the restricted session is resumed in a new headless RPC process: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
 
 Every spawn records name → session file in `artifacts/<sessionId>/subagent-registry.json`, so names stay addressable across pi restarts. A nested sub-agent that spawns children gets its own registry keyed by its own session id. Resume is refused with a clear error (listing known names) if the name isn't registered, the session file is gone, or the session predates sandboxed resume.
 
@@ -114,10 +117,10 @@ You are a specialized agent that does X...
 | `session-mode` | string | `standalone` (default), `lineage-only`, or `fork` — see below |
 | `system-prompt` | string | `append` or `replace`: pass the body as the child's `--append-system-prompt` / `--system-prompt`. Omit and the body is prepended to the task prompt instead |
 | `auto-exit` | boolean | Auto-shutdown when the agent finishes (see below) |
-| `interactive` | boolean | Whether stall/recovery transitions wake the parent (see below) |
+| `interactive` | boolean | Selects the visible tmux backend when true and controls stall/recovery notifications (see below) |
 | `cwd` | string | Default working directory |
 | `disable-model-invocation` | boolean | Hide from `subagents_list`; still spawnable by explicit name |
-| `cli` | string | `claude` runs the agent via the Claude Code CLI instead of pi |
+| `cli` | string | Reserved for alternate backends. `claude` profiles are currently rejected because Claude Code cannot enforce the same tool sandbox |
 
 ### session-mode
 
@@ -136,11 +139,11 @@ Notes:
 
 ### interactive
 
-Controls whether `stalled`/`recovered` status transitions send a steer message to the parent session. Defaults to the inverse of `auto-exit`: autonomous agents get stall pings; user-driven agents stay quiet (the user is already working in that pane — the widget still updates). Set explicitly to override.
+Controls the runtime backend and whether `stalled`/`recovered` status transitions send a steer message to the parent session. It defaults to the inverse of `auto-exit`: autonomous agents use headless RPC and get stall pings; user-driven agents use tmux and stay quiet (the widget still updates). Set `interactive: true` for a visible tmux session or `interactive: false` for headless execution.
 
 ## Tool access control
 
-Access is **whitelist-only**. Every sub-agent process is launched with `--no-extensions` (extension discovery disabled) and `--tools <allowlist>`; only the extensions backing the listed tools are loaded back in explicitly. There is no default toolset and no deny-list — an agent gets exactly what its frontmatter lists. The restriction survives resume via the loadout snapshot.
+Access is **whitelist-only**. Every sub-agent process is launched with `--no-extensions` (extension discovery disabled) and `--tools <allowlist>`; only the extensions backing the listed tools are loaded back in explicitly. There is no default toolset and no deny-list — an agent gets exactly what its frontmatter lists. Resume validates the loadout snapshot against the current agent policy and refuses to run if its tool or nested-agent permissions changed.
 
 Spawns must name a known agent at **every** depth. A top-level session may spawn anything discoverable; a sub-agent may only spawn the agents in its `subagent_agents` list (enforced via `PI_SUBAGENT_ALLOWED`). There is no agentless spawn route, so a child can never escalate to a full-toolset profile by omitting its agent.
 
@@ -165,7 +168,7 @@ Set a per-agent default with `cwd:` in frontmatter.
 
 ## Status widget & configuration
 
-The widget tracks each sub-agent from a runtime activity snapshot written by the child: `starting`, `active` (turn/provider/tool work), `waiting` (open for input or another stage), `stalled` (no valid snapshot for too long), or `running` (fallback). Sub-agent sessions also show their own tools widget — toggle it with `Ctrl+Alt+O`. Completion messages expand with `Ctrl+O`.
+The widget tracks each sub-agent from structured Pi events and a validated runtime activity snapshot written by the child: `starting`, `active` (turn/provider/tool work), `waiting` (open for input or another stage), `stalled` (no valid snapshot for too long), or `running` (fallback). It never scrapes a terminal screen for headless state. Open the specialized live view with `Ctrl+Alt+S` or `/subagents [name]`; it shows the current scope/tool, latest event, runtime, task, model, working directory, session path, and the sub-agent's conversation (reasoning, assistant text, tool calls, and tool results). With multiple agents, use `Left`/`Right` inside the inspector to switch between them without closing it. Streaming reasoning and text appear live for both headless and interactive Pi sub-agents. The view follows new output by default; scroll up to pause following, then press `End` or `f` to catch up. Interactive sub-agent sessions also show their own tools widget; toggle it with `Ctrl+Alt+O`. Completion messages expand with `Ctrl+O`.
 
 Status display is configured via `config.json` in the extension directory (copy `config.json.example`; it's gitignored):
 
@@ -177,10 +180,11 @@ Status display is configured via `config.json` in the extension directory (copy 
 
 ## Requirements
 
-- [pi](https://github.com/badlogic/pi-mono)
-- [tmux](https://github.com/tmux/tmux)
+- [pi](https://github.com/badlogic/pi-mono) 0.70 or newer (required for extension-tool allowlists)
+- [tmux](https://github.com/tmux/tmux), only for profiles using the interactive fallback
 
 ```bash
+# Optional, needed only for interactive profiles
 tmux new -A -s pi 'pi'
 ```
 
